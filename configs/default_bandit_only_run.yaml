@@ -1,0 +1,75 @@
+project_name: sql_injection_llm_thesis
+model:
+  base_model: bigcode/starcoder2-3b
+paths:
+  dataset_dir: dataset
+  output_root: outputs
+  lora_only_dir: outputs/models/lora_only_starcoder2_3b
+  lora_sft_dir: outputs/models/lora_sft_starcoder2_3b
+  dpo_lora_dir: outputs/models/lora_dpo_starcoder2_3b
+  qlora_only_dir: outputs/models/qlora_only_starcoder2_3b
+  qlora_sft_dir: outputs/models/qlora_sft_starcoder2_3b
+  qlora_dpo_dir: outputs/models/qlora_dpo_starcoder2_3b
+dataset:
+  seed: 42
+  val_ratio: 0.1
+  train_sft_n: 800
+  val_sft_n: 100
+  eval_prompts_n: 120
+files:
+  sql_security_dataset: dataset/sql_security_dataset.json
+  train_sft_json: data/combined/train.json
+  dpo_pairs: data/dpo_pairs.json
+  train_sft: dataset/sft_train.jsonl
+  val_sft: dataset/sft_val.jsonl
+  train_dpo: dataset/dpo_train.jsonl
+  eval_prompts: data/combined/eval_fixed.json
+generation:
+  max_new_tokens: 256
+  temperature: 0
+  top_p: 0.9
+eval:
+  load_in_4bit: true
+  per_device_eval_batch_size: 4
+  dataloader_num_workers: 2
+  dataloader_pin_memory: true
+  merge_mode: or
+  enable_taint: true
+training:
+  max_seq_len: 1024
+  batch_size: 1
+  grad_accum: 16
+  disable_amp: true
+  fp16: false
+  bf16: false
+  max_grad_norm: 1.0
+  dataloader_num_workers: 2
+  dataloader_pin_memory: true
+  learning_rate_sft: 0.0002
+  learning_rate_dpo: 5.0e-07
+  num_train_epochs_sft: 2
+  num_train_epochs_dpo: 1
+  warmup_ratio: 0.03
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 100
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  load_in_4bit: true
+  lora_target_modules: auto
+dpo:
+  beta: 0.01
+  max_length: 768
+  max_prompt_length: 512
+outputs:
+  always_safe_results: outputs/always_safe_results_bandit_only.json
+  baseline_results: outputs/baseline_results_bandit_only.json
+  lora_only_results: outputs/lora_only_results_bandit_only.json
+  lora_sft_results: outputs/lora_sft_results_bandit_only.json
+  lora_dpo_results: outputs/lora_dpo_results_bandit_only.json
+  qlora_only_results: outputs/qlora_only_results_bandit_only.json
+  qlora_sft_results: outputs/qlora_sft_results_bandit_only.json
+  qlora_dpo_results: outputs/qlora_dpo_results_bandit_only.json
+  comparison_summary: outputs/comparison_summary_bandit_only.json
+  compare_results: outputs/compare_results_bandit_only.json

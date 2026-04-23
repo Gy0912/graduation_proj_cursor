@@ -1,0 +1,18 @@
+# 与 configs/default.yaml 合并使用：python training/dpo_train.py --config configs/dpo.yaml
+# 覆盖 DPO 显存与数据路径相关项
+
+paths:
+  dpo_lora_dir: outputs/models/lora_dpo_starcoder2_3b
+
+files:
+  dpo_pairs: data/dpo_pairs.json
+
+training:
+  learning_rate_dpo: 5.0e-7
+  num_train_epochs_dpo: 1
+  grad_accum: 8
+  save_steps: 200
+
+dpo:
+  beta: 0.01
+  max_length: 768

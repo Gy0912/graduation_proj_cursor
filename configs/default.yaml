@@ -1,0 +1,103 @@
+# 本科论文默认可复现实验配置（8GB 显存优先：4bit + LoRA + batch=1）
+project_name: sql_injection_llm_thesis
+
+# 选用 StarCoder2-3B：代码专项、开源、社区权重成熟；3B 规模在 4bit+LoRA 下 8GB 可训可推。
+# 备选：Salesforce/codegen-2B-mono（更小更省显存）。
+model:
+  base_model: bigcode/starcoder2-3b
+  # 备选: Salesforce/codegen-2B-mono
+
+paths:
+  dataset_dir: dataset
+  output_root: outputs
+  lora_only_dir: outputs/models/lora_only_starcoder2_3b
+  lora_sft_dir: outputs/models/lora_sft_starcoder2_3b
+  dpo_lora_dir: outputs/models/lora_dpo_starcoder2_3b
+  qlora_only_dir: outputs/models/qlora_only_starcoder2_3b
+  qlora_sft_dir: outputs/models/qlora_sft_starcoder2_3b
+  qlora_dpo_dir: outputs/models/qlora_dpo_starcoder2_3b
+
+dataset:
+  seed: 42
+  val_ratio: 0.1
+  # 以下三项供 scripts/build_dataset.py（合成 jsonl）使用；主 SFT 数据来自 data/train_expanded.json
+  train_sft_n: 800
+  val_sft_n: 100
+  eval_prompts_n: 120
+
+files:
+  # 主训练集（instruction / input / output + attack_type / difficulty / task_type）
+  sql_security_dataset: dataset/sql_security_dataset.json
+  # 扩展流水线（建议 2000–3000 条总量）：python dataset/generate_expanded_dataset.py --num_samples 2500
+  # 研究 schema（含 id / vulnerability_type / input_code）：由 generate_expanded_dataset 写出
+  train_sft_json: data/combined/train.json
+  dpo_pairs: data/dpo_pairs.json
+  train_sft: dataset/sft_train.jsonl
+  val_sft: dataset/sft_val.jsonl
+  train_dpo: dataset/dpo_train.jsonl
+  # 评测集（唯一权威源）：data/combined/eval_fixed.json
+  # - 由 scripts/build_eval_fixed.py 合并 data/generation/eval.json + data/fix/eval.json 产出
+  # - 强制每条样本含 expected_vulnerable / vulnerability_type / difficulty / task_type
+  # - 旧版 data/combined/eval.json 已归档至 data/_archive/（缺 expected_vulnerable，禁止再用）
+  eval_prompts: data/combined/eval_fixed.json
+
+generation:
+  max_new_tokens: 256
+  temperature: 0.2
+  top_p: 0.9
+
+eval:
+  load_in_4bit: true
+  per_device_eval_batch_size: 4
+  dataloader_num_workers: 2
+  dataloader_pin_memory: true
+  # 检测合并：or（默认，Bandit 仅 B608 计入 SQL 层）| or_bandit_any | weighted
+  merge_mode: or
+  enable_taint: false
+
+training:
+  max_seq_len: 1024
+  batch_size: 1
+  grad_accum: 16
+  # 完全关闭混合精度：避免 FP16 GradScaler / autocast 与 bfloat16 梯度路径冲突（调试或稳定训练时开启）
+  disable_amp: true
+  fp16: false
+  bf16: false
+  max_grad_norm: 1.0
+  dataloader_num_workers: 2
+  dataloader_pin_memory: true
+  learning_rate_sft: 2.0e-4
+  learning_rate_dpo: 5.0e-7
+  num_train_epochs_sft: 2
+  num_train_epochs_dpo: 1
+  warmup_ratio: 0.03
+  logging_steps: 10
+  save_steps: 100
+  eval_steps: 100
+  lora_r: 16
+  lora_alpha: 32
+  lora_dropout: 0.05
+  load_in_4bit: true
+  # StarCoder2（Starcoder2ForCausalLM）：注意力为 q/k/v/o_proj，MLP 为 c_fc/c_proj（见 transformers modeling_starcoder2.py）
+  # 填 auto 则在加载模型后由 training/lora_utils.py 自动匹配；也可显式列出：
+  # lora_target_modules: [q_proj, k_proj, v_proj, o_proj, c_fc, c_proj]
+  lora_target_modules: auto
+
+dpo:
+  beta: 0.01
+  # DPO 双前向，768 更省显存（8GB）；可在 configs/dpo.yaml 覆盖为 1024
+  max_length: 768
+  max_prompt_length: 512
+
+outputs:
+  # 恒安全输出对照（不加载 LLM）：用于验证 classification_vs_expected / recall_vulnerable
+  always_safe_results: outputs/always_safe_results.json
+  baseline_results: outputs/baseline_results.json
+  lora_only_results: outputs/lora_only_results.json
+  lora_sft_results: outputs/lora_sft_results.json
+  lora_dpo_results: outputs/lora_dpo_results.json
+  qlora_only_results: outputs/qlora_only_results.json
+  qlora_sft_results: outputs/qlora_sft_results.json
+  qlora_dpo_results: outputs/qlora_dpo_results.json
+  comparison_summary: outputs/comparison_summary.json
+  compare_results: outputs/compare_results.json

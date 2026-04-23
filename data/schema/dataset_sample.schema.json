@@ -1,0 +1,48 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.org/sqlsec/dataset_sample.schema.json",
+  "title": "SQLSecResearchSample",
+  "type": "object",
+  "required": [
+    "id",
+    "task_type",
+    "instruction",
+    "expected_vulnerable",
+    "vulnerability_type",
+    "difficulty"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Stable unique id (e.g. sqlsec-<hash>)."
+    },
+    "task_type": {
+      "type": "string",
+      "enum": ["generation", "fix"]
+    },
+    "instruction": {
+      "type": "string"
+    },
+    "input_code": {
+      "type": ["string", "null"],
+      "description": "Context or vulnerable snippet; null if none."
+    },
+    "expected_vulnerable": {
+      "type": "boolean",
+      "description": "Ground truth: whether the reference answer is considered SQLi-risky."
+    },
+    "vulnerability_type": {
+      "type": "string",
+      "description": "e.g. fstring, string_concat, indirect, orm_misuse, fake_sanitization, parameterized_query, format_string"
+    },
+    "difficulty": {
+      "type": "string",
+      "enum": ["easy", "medium", "hard"]
+    },
+    "output": {
+      "type": "string",
+      "description": "Reference completion; present in training splits only."
+    }
+  },
+  "additionalProperties": true
+}

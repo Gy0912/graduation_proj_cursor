@@ -1,0 +1,256 @@
+# 项目目录与文件说明
+
+以下为仓库内**源码与配置**的完整树（不含 `.git`、`__pycache__`、以及 `outputs/models/` 下体积较大的 checkpoint 权重文件；评测 JSON 位于 `outputs/*.json`，由实验产生）。
+
+```
+.
+├── README.md
+├── PROJECT_STRUCTURE.md
+├── requirements.txt
+├── 任务报告书.txt
+├── configs/
+│   ├── default.yaml
+│   └── dpo.yaml
+├── data/
+│   ├── combined/
+│   │   ├── eval_fixed.json          # 权威评测集（带 expected_vulnerable，合并自 generation+fix）
+│   │   └── train.json
+│   ├── fix/
+│   │   ├── eval.json                # 评测源（研究 schema）
+│   │   └── train.json
+│   ├── generation/
+│   │   ├── eval.json                # 评测源（研究 schema）
+│   │   └── train.json
+│   ├── _archive/
+│   │   ├── README.md
+│   │   ├── combined_eval_legacy_unlabeled_2026-04-20.jsonl  # 旧 combined/eval.json（无 expected_vulnerable，已弃用）
+│   │   └── pre_2026-04-22_contaminated_sft/                # 2026-04-22 对抗修复前的全套 SFT 污染数据（output 含真·脆弱 SQL），禁止再被训练加载
+│   ├── schema/
+│   │   └── dataset_sample.schema.json
+│   ├── samples/
+│   │   └── examples_research_schema.json
+│   ├── dpo_pairs.json
+│   ├── eval_expanded.json
+│   └── train_expanded.json
+├── dataset/
+│   ├── __init__.py
+│   ├── adversarial.py                # 【2026-04-22 新增】对抗 marker/模板/校验的 single source of truth
+│   ├── generate_expanded_dataset.py
+│   ├── generate_sql_security_dataset.py
+│   ├── research_schema.py
+│   ├── sql_security_dataset.json
+│   └── synthetic_sql.py
+├── detection/
+│   ├── __init__.py
+│   ├── bandit_wrapper.py
+│   ├── detector.py
+│   ├── rule_based.py
+│   └── sql_injection_detector.py
+├── evaluation/
+│   ├── __init__.py
+│   ├── evaluate.py
+│   ├── evaluator.py
+│   ├── experiment_log.py
+│   ├── metrics.py
+│   └── prompt_loader.py
+├── logs/
+│   ├── README.md
+│   ├── dataset/
+│   │   └── (运行 generate_expanded_dataset 时生成 *.log)
+│   ├── errors/
+│   │   └── .gitkeep
+│   └── experiments/
+│       └── .gitkeep
+├── models/
+│   └── README.md
+├── outputs/
+│   ├── baseline_results.json        # 新 schema：extraction_failure_rate / sql_injection_rate_valid / valid_only/conservative/strict
+│   ├── lora_dpo_results.json
+│   ├── lora_only_results.json
+│   ├── lora_sft_results.json
+│   ├── qlora_dpo_results.json
+│   ├── qlora_only_results.json
+│   ├── qlora_sft_results.json
+│   ├── comparison_summary.json
+│   ├── examples/                    # 新 schema 示例 JSON（invalid-extraction 语义加固版）
+│   ├── _archive_pre_2026-04-21_extraction_fix/  # 旧结果 JSON（带旧 schema，已归档不再使用）
+│   └── models/
+│       └── (各 LoRA 适配器目录与 checkpoint，由训练产生)
+├── reports/
+│   ├── ANALYSIS_0.5B_FAILURE.md
+│   └── operation_manual.md
+├── scripts/
+│   ├── README.md
+│   ├── build_dataset.py              # 仅写 SFT/DPO 兼容 JSONL（不再覆盖评测集）
+│   ├── build_eval_fixed.py           # 合并 generation+fix → data/combined/eval_fixed.json
+│   ├── check_adversarial_dataset.py  # 【2026-04-22 新增】对抗合规独立 CLI：3 段 marker + SAFE SOLUTION 参数化
+│   ├── compare_results.py
+│   ├── prepare_default_run.py
+│   ├── prepare_bandit_only_run.py
+│   ├── migrate_dataset_to_research_schema.py
+│   ├── plot_results.py
+│   ├── 00_prepare_env.ps1
+│   └── run_thesis_pipeline.py
+├── tests/                                  # 全量回归 60 条（9 + 18 + 14 + 5 + 14）
+│   ├── test_invalid_extraction_metrics.py  # 2026-04-21 加固验收（9 条：三组 bundle / 硬失败 / 契约拒绝 / 旧 schema 拒绝；2026-04-22 八次加固后 BASE_FIELDS 补 has_* 三字段）
+│   ├── test_response_quality_metrics.py    # 【2026-04-22 八次加固验收】18 条：per-sample 注入 / 4 项 rate 聚合 + 正负子集拆分 / 契约方向（positives↑ negatives↓） / 既有指标不变 / FAIL FAST
+│   ├── test_compare_results_response_quality.py  # 【2026-04-22 九次加固验收】14 条：metrics_block_from_eval_json 抽取 / 缺字段不 crash / _print_table 百分比格式 / 跨模型差异 + struct_score 排序 / 顶层 summary 5×N 个 {method}_<rate> 键
+│   ├── test_rule_false_positive.py         # 2026-04-22 七次加固验收（14 条：percent_execute_tuple 删除 + SAFE/UNSAFE 双向契约）
+│   └── test_taint_tracker.py               # 污点追踪模块回归（5 条）
+└── training/
+    ├── __init__.py
+    ├── amp_grad_debug.py
+    ├── common.py
+    ├── config_utils.py
+    ├── dpo_train.py
+    ├── dtype_utils.py
+    ├── gpu_debug.py
+    ├── lora_utils.py
+    ├── sft_preprocess.py
+    ├── train_lora_only.py
+    ├── train_lora_sft.py
+    ├── train_qlora_dpo.py
+    ├── train_qlora_only.py
+    └── train_qlora_sft.py
+```
+
+## 根目录
+
+| 文件 | 作用 |
+|------|------|
+| `README.md` | 项目概述、架构、环境、端到端命令、指标说明 |
+| `PROJECT_STRUCTURE.md` | 本文件：目录树与模块职责 |
+| `requirements.txt` | Python 依赖版本下限 |
+| `任务报告书.txt` | 用户自备文档（非代码逻辑） |
+
+## configs/
+
+| 文件 | 作用 |
+|------|------|
+| `default.yaml` | 基座模型路径、数据路径、训练/评测参数、`outputs` 结果文件名、`eval.merge_mode` |
+| `default_run.yaml` | 由 `scripts/prepare_default_run.py` 生成，默认实验运行配置 |
+| `default_bandit_only_run.yaml` | 由 `scripts/prepare_bandit_only_run.py` 生成，输出文件名带 `_bandit_only` |
+| `dpo.yaml` | 与 default/default_run 合并：DPO 学习率、输出目录等覆盖项 |
+
+## data/
+
+| 路径 | 作用 |
+|------|------|
+| `combined/train.json` | 研究 schema 训练集：含 `task_type`、`expected_vulnerable`、`vulnerability_type`、`difficulty`、`input_code`、`output` |
+| `combined/eval_fixed.json` | **唯一权威评测集；单一写入者 `scripts/build_eval_fixed.py`**（2026-04-20 三次加固）。合并 `generation/eval.json` + `fix/eval.json`；pre-write + post-write 双重强校验 `expected_vulnerable` / `vulnerability_type` / `difficulty` 全字段齐整且正负双类非空 |
+| `generation/` / `fix/` | 按 `task_type` 拆分的 train/eval，由 `write_research_splits` 写出；是 `eval_fixed.json` 的**唯一**上游输入 |
+| `_archive/` | 弃用数据（禁止再使用），内含旧 `combined/eval.json`（无 `expected_vulnerable`） |
+| `train_expanded.json` / `eval_expanded.json` | 生成器写出的扁平格式（兼容旧流程） |
+| `dpo_pairs.json` | DPO 偏好对（默认配置引用） |
+| `schema/dataset_sample.schema.json` | 样本 JSON Schema |
+| `samples/examples_research_schema.json` | 小样本示例 |
+
+## dataset/
+
+| 文件 | 作用 |
+|------|------|
+| `adversarial.py` | **【2026-04-22 六次加固新增】对抗训练 single source of truth**：导出 `MARKER_WARNING` / `MARKER_EXPLANATION` / `MARKER_SAFE` / `ADVERSARIAL_MARKERS` 常量；`build_secure_response(vulnerable_code, table, column, *, attack, rng)` 按攻击族（`string_concat`/`fstring`/`format_string`/`fake_sanitization`/`orm_misuse`/`parameterized_query`/`indirect_injection`）合成 3 段式响应，SAFE SOLUTION 在 pymysql / sqlite3 / SQLAlchemy 模板里选一并**强制参数化**；`extract_safe_solution` + `assert_adversarial_output_format` 做格式校验；`contains_vulnerable_sql_pattern` 以 9 条正则（vendoring 自 `detection/rule_based.py`）扫描脆弱 SQL；`check_adversarial_dataset` 返回 `DatasetCheckReport`（合规率 + 违规明细），不 raise，交调用方决定 FAIL FAST |
+| `generate_expanded_dataset.py` | **主数据入口**：生成扩展集、DPO 对、`data/combined/train.json` + per-task 拆分；**不写 `eval_fixed.json`**（自 2026-04-20 单一写入者加固起）。自 2026-04-20 四次加固起，`build_dpo_pairs` 与 main 收尾对 `expected_vulnerable` 做 fail-fast。**2026-04-22 六次加固**：`build_one_sample` + `_fill_bucket_list` 的 ambiguous 分支调用 `build_secure_response(...)` 替换 `output`（不再写真·脆弱 SQL）；`_decorate_hard_output` 只作用于非对抗分支；`build_dpo_pairs` 的 `expected_vulnerable=True` → `chosen=对抗响应` / `rejected=现场脆弱 SQL`；`_safe_indirect_chain` 消除静态串拼接；`main` 收尾跑 `check_adversarial_dataset(train/eval)`，违反即 `sys.exit(1)`。日志写入 `logs/dataset/` |
+| `research_schema.py` | `stable_sample_id`、`to_research_record`、`write_research_splits`（仅写 per-task 拆分；不再写 `eval_fixed.json`）。自 2026-04-20 四次加固起，`to_research_record` 的 `include_output=True`（训练端）也强制要求 `expected_vulnerable` 存在且为 `bool`，缺失即 `ValueError` |
+| `generate_sql_security_dataset.py` | 旧版小规模生成器 |
+| `synthetic_sql.py` | 合成片段工具（供 `scripts/build_dataset.py` 等） |
+| `sql_security_dataset.json` | 无扩展集时的回退训练数据 |
+
+## detection/
+
+| 文件 | 作用 |
+|------|------|
+| `sql_injection_detector.py` | **统一检测**：`detect_vulnerability`（Bandit+规则）、`extract_python_code`、合并逻辑 |
+| `detector.py` | 向后兼容 re-export |
+| `bandit_wrapper.py` | 子进程调用 Bandit JSON |
+| `rule_based.py` | 正则/启发式 SQL 构造检测 |
+| `__init__.py` | 包导出 |
+
+## evaluation/
+
+| 文件 | 作用 |
+|------|------|
+| `evaluate.py` | 评测 CLI：多模型模式、`--merge-mode`、日志目录 |
+| `evaluator.py` | 批量生成 + 调用 `detect_vulnerability` + 写结果 JSON；启动处 `_assert_dataset_sanity` 打印 Total/Vulnerable/Safe + `Valid labels: N/N (100.00%)` 审计行；2026-04-20 四次加固：三字段 `id/prompt/expected_vulnerable` 全量存在性+类型校验，单类数据或空集直接 `RuntimeError`；**2026-04-21 五次加固**：抽取失败分支走 `_invalid_extraction_sample`（`is_vulnerable=None`），`_per_sample_from_detection` 显式禁止 `invalid_extraction=True` 调用；`save_results` 写出新 schema（`valid_only_metrics` / `conservative_metrics` / `strict_metrics` / `extraction_failure_rate`），彻底移除旧版 `overall_sql_injection_rate` / `sql_injection_rate` / `safe_code_generation_rate` / `classification_vs_expected` 字段；**2026-04-22 八次加固**：新增 `_response_structure_flags(raw_output)` helper（字面量子串匹配 `MARKER_WARNING/EXPLANATION/SAFE_SOLUTION`），`_per_sample_from_detection` 与 `_invalid_extraction_sample` 两条 per-sample 构造路径都注入 `has_warning` / `has_explanation` / `has_safe_solution` 三个 bool 字段；`save_results` 顶层 `summary` 块新增 `response_quality_metrics`；既有 22 个字段顺序与值**完全不变** |
+| `metrics.py` | 聚合：混淆矩阵、FPR/FNR、分层统计、`per_detector_vs_expected`、`by_attack_type_metrics`；2026-04-20 四次加固：内置 `_require` / `_require_bool` 对所有 detector 输出字段做 fail-fast，取代 `s.get(field, False)` 静默兜底；**2026-04-21 五次加固**：引入 `_require_is_vulnerable_respecting_invalid`（valid→bool，invalid→None），`aggregate_metrics` 产出 `valid_only_metrics` / `conservative_metrics` / `strict_metrics` 三组指标 + `extraction_failure_rate`；`assert_extraction_reliability` 在 `rate > 0.5` 时 `RuntimeError("Model output mostly invalid. Evaluation unreliable.")` 阻止不可靠评测写 JSON；移除旧 `overall_sql_injection_rate` 全量样本混合指标；**2026-04-22 八次加固**：新增 `MARKER_WARNING / MARKER_EXPLANATION / MARKER_SAFE_SOLUTION / ADVERSARIAL_MARKERS` 字面量常量（与 `dataset/adversarial.py` 保持完全一致）+ `_REQUIRED_RESPONSE_QUALITY_FIELDS` 强制契约集 + `MetricBundle.response_quality_metrics: dict` 字段 + `_compute_response_quality_metrics(samples)` 函数；`aggregate_metrics` 在**全量**样本（含 `invalid_extraction=True`）上算 `warning_rate / explanation_rate / safe_solution_rate / full_compliance_rate` 与按 `expected_vulnerable` 拆分的 `*_on_positives` / `*_on_negatives` 子集 rate；`print_eval_summary` 增量打印 `[Eval] response_quality ...` 两行；既有指标的字段名 / 类型 / 数值语义**全部不变**（用 `tests/test_response_quality_metrics::TestExistingMetricsUnchanged` 机械固化） |
+| `prompt_loader.py` | 加载 JSON/JSONL；`_normalize_sample` **强制** `expected_vulnerable`/`id`/`vulnerability_type` 存在且类型正确，否则 `ValueError`（FAIL FAST）；2026-04-20 四次加固新增 `validate_eval_samples()` 独立 pre-eval validator，返回 `{total, valid, pct_valid, pos, neg}` 供 CLI 打印"有效标签百分比"日志 |
+| `experiment_log.py` | 文件日志初始化 |
+
+## logs/
+
+| 路径 | 作用 |
+|------|------|
+| `README.md` | 日志目录约定 |
+| `dataset/*.log` | 数据集构建日志 |
+| `experiments/` | 评测/实验运行日志（`evaluate.py --log-dir`） |
+| `errors/` | 建议存放未捕获异常导出 |
+| `changelog_2026-04-20_eval_label_enforcement.md` | 评测数据集 `expected_vulnerable` 强标签契约 |
+| `changelog_2026-04-20_id_string_enforcement.md` | 评测/训练样本 `id` 不透明字符串契约与 `int(x["id"])` 排序崩溃修复 |
+| `changelog_2026-04-20_single_eval_writer.md` | `data/combined/eval_fixed.json` 单一写入者加固（移除 `write_research_splits` 的重复写入；`build_eval_fixed.py` 增 pre/post-write 双重 schema 校验） |
+| `changelog_2026-04-20_missing_field_fail_fast.md` | 缺字段 FAIL FAST 四次加固：清理 `s.get(field, default)` 静默回退，扩展 critical fields 到 `id/prompt/expected_vulnerable`，metrics 层对检测器输出字段全面 fail-fast，新增 `validate_eval_samples()` pre-eval validator 与「有效标签百分比」日志 |
+| `changelog_2026-04-21_invalid_extraction_semantics.md` | invalid-extraction 语义加固（五次加固）：invalid 样本 `is_vulnerable=None`；移除 `overall_sql_injection_rate` 等"混入 invalid 当 safe"的指标；指标拆成 `valid_only_metrics` / `conservative_metrics` / `strict_metrics` 三组；暴露 `extraction_failure_rate` 并在 > 0.5 时硬失败；打印 Total/Valid/Invalid/FailureRate 与三组 F1/P/R 审计行 |
+| `changelog_2026-04-22_adversarial_sft_training.md` | **对抗训练 SFT 反污染（六次加固）**：`expected_vulnerable=True` 样本的 `output` 由真·脆弱 SQL 改写为 `[SECURITY WARNING] + [EXPLANATION] + [SAFE SOLUTION]` 3 段式对抗 target；引入 `dataset/adversarial.py`（single source of truth）；生成器收尾 + SFT pre-flight + 独立 CLI 三层独立校验；DPO 改为 `chosen=对抗响应 / rejected=现场脆弱 SQL`；旧污染数据归档到 `data/_archive/pre_2026-04-22_contaminated_sft/` |
+| `changelog_2026-04-22_rule_false_positive_fix.md` | **规则层假阳性修复（七次加固）**：彻底删除 `detection/rule_based.py` 的 `percent_execute_tuple` 规则（原正则 `execute\s*\(\s*["'][^"']*%s` 会把 pymysql / psycopg2 参数化查询 `execute("...%s", (val,))` 误报为 `"..." % val` 格式化漏洞，污染评测 precision/fpr_valid 与 DPO 偏好信号）；真·格式化形态由保留的 `percent_format_sql` 正则（尾部强制 `["']\s*%`）与 Bandit B608 共同覆盖；新增 `tests/test_rule_false_positive.py`（14 条断言，SAFE/UNSAFE 双向契约 + 规则存在性机械断言）；合并逻辑 / Bandit wrapper / 污点追踪**零改动** |
+| `changelog_2026-04-22_response_quality_metrics.md` | **响应质量指标（八次加固）**：把评测从"只看代码安全"扩展为"代码安全 + 响应结构合规"双轨。在 `evaluation/evaluator.py` 的 `_per_sample_from_detection` / `_invalid_extraction_sample` 两条 per-sample 构造路径都注入 `has_warning` / `has_explanation` / `has_safe_solution` 三个 bool 字段（字面量子串匹配 `raw_output`）；在 `evaluation/metrics.py` 新增 `response_quality_metrics` 块（`warning_rate` / `explanation_rate` / `safe_solution_rate` / `full_compliance_rate` 共 4 项整体 rate + 按 `expected_vulnerable` 拆分的 `*_on_positives` / `*_on_negatives` 8 项子集 rate）；机械固化"`expected_vulnerable=True` 高合规 / `expected_vulnerable=False` 低合规"训练契约方向；**严格不触碰** `sql_injection_rate_valid` / `precision_vulnerable` / `recall_vulnerable` / `f1_vulnerable` / 三组 confusion matrix 的任何字段或数值；新增 `tests/test_response_quality_metrics.py`（18 条断言，4 个测试类，覆盖 per-sample 注入 / 聚合算术 / 契约方向 / 既有指标不变 / FAIL FAST 五个维度） |
+| `changelog_2026-04-22_compare_results_response_quality.md` | **对比脚本响应质量指标接入（九次加固）**：把八次加固已经写入评测 JSON 的 `summary.response_quality_metrics`（4 项整体 rate）从孤儿字段升级为 `scripts/compare_results.py` 对比表与 `outputs/comparison_summary.json` 顶层的 first-class 列。`metrics_block_from_eval_json` 扩展抽取 4 项整体 rate（缺字段 → None，不 raise），`_print_table` 新增 5 列 `warn% / expl% / safe% / full% / struct%`（百分比 `0.85 → 85.0%`），新增派生指标 `structured_response_score = full_compliance_rate` 用作模型排序锚点，顶层 summary 同步落入 5 × N 个 `{method}_<rate>` 键。**严格不删除 / 不改名**既有的 `sql_injection_rate_valid` / `valid_only` / `conservative` / `strict` / `extraction_failure_rate` 字段；新增 `tests/test_compare_results_response_quality.py`（14 条断言，4 个测试类，覆盖 per-model 抽取 / 缺字段兼容 / 跨模型差异 / struct_score 排序 / 顶层 summary 注入 5 个维度） |
+| `samples_adversarial_2026-04-22.log` | 2026-04-22 六次加固产出的 3 条示例对抗样本（instruction + input_code + 3 段式 output），作为 README/changelog 的证据 |
+
+## scripts/
+
+| 文件 | 作用 |
+|------|------|
+| `build_eval_fixed.py` | **`data/combined/eval_fixed.json` 的唯一写入者**（2026-04-20 三次加固）：合并 `data/generation/eval.json` + `data/fix/eval.json` → `data/combined/eval_fixed.json`；pre-write + post-write 双重跑 `_assert_dataset_final`（标签存在性 + `vulnerability_type` / `difficulty` 一致性 + 正负双类非空） |
+| `build_dataset.py` | 仅写 `dataset/*.jsonl` 的 SFT/DPO demo；**不再写评测集** |
+| `check_adversarial_dataset.py` | **【2026-04-22 六次加固新增】对抗合规独立 CLI**：封装 `dataset.adversarial.check_adversarial_dataset`，默认扫描 `data/train_expanded.json` + `data/eval_expanded.json` + `data/combined/train.json`（可通过 `--input/-i` 覆盖）；退出码 `0` 通过 / `1` 违反契约 / `2` I/O 错误。可接入 CI 做"生成后 / 训练前"一次性对抗数据体检 |
+| `migrate_dataset_to_research_schema.py` | 将 `train_expanded`/`eval_expanded` 迁移为 per-task 拆分（`data/combined/train.json` + `data/generation/*` + `data/fix/*`）；**不写 `eval_fixed.json`**；评测行与**训练行**缺 `expected_vulnerable` 均直接 `ValueError`（2026-04-20 四次加固：`_normalize_train_row` 不再默认填 `False`） |
+| `plot_results.py` | 读取各模型结果 JSON，生成 **valid-only** SQL 注入率、`extraction_failure_rate`（含 0.5 阈值线）、valid-only FPR/FNR 柱状图（2026-04-21 五次加固：严禁读旧 `sql_injection_rate` 字段） |
+| `compare_results.py` | 汇总多模型 `outputs/*_results.json` 为 `comparison_summary.json`；**2026-04-21 五次加固**：展示 `extraction_failure_rate` + `sql_injection_rate_valid` + valid-only/conservative/strict 三组 F1/P/R，并打印 markdown 风格对比表；拒绝读旧 schema JSON（缺任一新字段即 `ValueError`）；**2026-04-22 九次加固**：在 `metrics_block_from_eval_json` 额外抽取 `summary.response_quality_metrics` 的 4 项整体 rate + 派生 `structured_response_score = full_compliance_rate`，缺字段填 None **不 raise**（兼容八次加固之前的旧 evaluator JSON）；对比表新增 5 列 `warn% / expl% / safe% / full% / struct%`（`0.85 → 85.0%`、None → `N/A`）；`comparison_summary.json` 顶层每个 method 多 5 个 `{method}_<rate>` 键 + baseline 5 个 `baseline_<rate>` 键，既有 4 个 baseline_* 键 / 4 × N 个 `{method}_*` 键 / `per_model[method]` 9 键全部完整保留 |
+| `prepare_default_run.py` | 从 `configs/default.yaml` 生成 `configs/default_run.yaml` |
+| `prepare_bandit_only_run.py` | 基于 `default_run.yaml` 生成 `default_bandit_only_run.yaml` |
+| `00_prepare_env.ps1` | Windows 下创建 venv 并安装依赖 |
+| `run_thesis_pipeline.py` | 可选端到端流水线；明确遵循「`eval_fixed.json` 单一写入者」不变式：`generate_expanded_dataset` → `build_dataset` → `build_eval_fixed`（唯一写入者）→ 训练/评测 |
+
+## training/
+
+| 文件 | 作用 |
+|------|------|
+| `train_lora_sft.py` | LoRA + SFT 主训练；**2026-04-22 六次加固**：加载 `data/train_expanded.json` 后立即调用 `sft_preprocess.run_pretraining_sanity_checks(records)`，trainer/tokenizer 加载前把关 |
+| `dpo_train.py` | LoRA + DPO（需已有 SFT 适配器） |
+| `train_lora_only.py` | 仅挂载 LoRA 并保存 |
+| `train_qlora_only.py` | 4bit + LoRA 仅挂载 |
+| `train_qlora_sft.py` | QLoRA + SFT；**2026-04-22 六次加固**：同 `train_lora_sft.py`，加载数据后立即跑 pre-flight sanity checks |
+| `train_qlora_dpo.py` | QLoRA + DPO |
+| `sft_preprocess.py` | instruction/input/output 分词与 completion mask；**2026-04-22 六次加固**：新增 `run_pretraining_sanity_checks(records)` = `assert_adversarial_samples_follow_format` + `assert_no_vulnerable_sql_patterns`，`expected_vulnerable=True` 样本缺 3 段 marker 或任一 `output` 含脆弱 SQL 即 `RuntimeError`；全量保留样本，不做任何过滤 |
+| `lora_utils.py` | target_modules 解析 |
+| `config_utils.py` | YAML 深度合并（DPO 配置） |
+| `dtype_utils.py` / `amp_grad_debug.py` / `gpu_debug.py` / `common.py` | 训练稳定性与诊断 |
+
+## outputs/
+
+| 文件 | 作用 |
+|------|------|
+| `*_results.json` | 各设置评测汇总 + `per_sample`（2026-04-21 五次加固 schema：`extraction_failure_rate` / `sql_injection_rate_valid` / `valid_only_metrics` / `conservative_metrics` / `strict_metrics`；**2026-04-22 八次加固新增** `summary.response_quality_metrics`：4 项整体 rate + 8 项正负子集 rate + `markers` + `note`；`per_sample[*]` 新增 `has_warning` / `has_explanation` / `has_safe_solution` 三个 bool 字段） |
+| `comparison_summary.json` | `compare_results.py` 输出（新 schema：`per_model[*]["extraction_failure_rate"]` / `sql_injection_rate_valid` / `valid_only` / `conservative` / `strict`；**2026-04-22 九次加固**：每个 method 新增 5 个 `{method}_warning_rate` / `{method}_explanation_rate` / `{method}_safe_solution_rate` / `{method}_full_compliance_rate` / `{method}_structured_response_score` 顶层键 + baseline 5 个 `baseline_<rate>` 键 + `per_model[method].response_quality` 子块；缺字段写为 JSON `null`） |
+| `examples/*.example.json` | 新 schema 示例 JSON（invalid-extraction 语义加固版；2026-04-22 八次加固加入 `response_quality_metrics` + per_sample has_* 三字段；**2026-04-22 九次加固**：`comparison_summary.example.json` 同步增加 5 + 5 × 3 = 20 个 `{method}_<rate>` 顶层键、2 × `per_model[*].response_quality` 子块、1 × `_legacy_eval_json_example` 演示 legacy JSON 全 null 兼容形态） |
+| `_archive_pre_2026-04-21_extraction_fix/` | **归档**：2026-04-21 之前的旧 schema 评测结果，仅供审计；带旧 `sql_injection_rate` / `overall_sql_injection_rate` / `classification_vs_expected` 字段，已不再被任何脚本读取 |
+| `models/*` | LoRA 权重与 tokenizer 副本 |
+
+## models/
+
+| 文件 | 作用 |
+|------|------|
+| `README.md` | 说明真实权重位于 `outputs/models/` |
+
+## reports/
+
+| 文件 | 作用 |
+|------|------|
+| `*.md` | 历史/操作说明（非运行时代码依赖） |
+
+## tests/
+
+| 文件 | 作用 |
+|------|------|
+| `test_invalid_extraction_metrics.py` | **2026-04-21 invalid-extraction 语义加固验收**：9 条 `unittest` 断言，覆盖三组 bundle（valid-only / conservative / strict）的混淆矩阵、`extraction_failure_rate > 0.5` 的硬失败、`invalid_extraction=True` 样本硬写 `is_vulnerable=False` 必须 `ValueError`、以及 `compare_results.py` / `plot_results.py` 拒绝旧 schema。运行：`python -m unittest tests.test_invalid_extraction_metrics -v` |
+| `test_rule_false_positive.py` | **2026-04-22 七次加固验收**：14 条 `unittest` 断言，2 个测试类。`TestRuleBasedFalsePositive` 验证 `detection/rule_based.py` 规则层在 7 种参数化写法（`%s` / `?` / `:name` / `%(name)s` / `executemany` / UPDATE/DELETE 等）上全部放行，并在 5 种真·格式化写法（`% val` / `% (a,b)` / f-string / `+` 拼接 / `.format`）上仍然命中；`test_percent_execute_tuple_rule_removed` 扫描 `SQLInjectionDetector._patterns` 确保已删除规则永不复活；`TestFullPipelineFalsePositive` 用 `detect_vulnerability` 端到端验证用户 PROBLEM 原样 SAFE/UNSAFE 两例（UNSAFE 由 Bandit B608 兜底）。运行：`python -m unittest tests.test_rule_false_positive -v` |
+| `test_taint_tracker.py` | `detection/taint_tracker.py` 的 5 条单元回归（污点标记、传播、合并、F-string 触发 SQLite execute 命中等）。运行：`python -m unittest tests.test_taint_tracker -v` |

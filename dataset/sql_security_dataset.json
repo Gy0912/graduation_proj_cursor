@@ -1,0 +1,602 @@
+[
+  {
+    "instruction": "Fetch rows from accounts by email field.",
+    "input": "Python sqlite3.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: users, column: email. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Write database access code for user lookup.",
+    "input": "Python + sqlite3. Prefer secure style if applicable.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: sessions, column: username. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM accounts WHERE password_hash = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM accounts WHERE username = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: orders, column: password_hash. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM accounts WHERE password_hash = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: orders, column: username. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: users, column: email. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Query users by name in Node.js with pg.",
+    "input": "Use async/await.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Implement a login query in Java using JDBC.",
+    "input": "Table users, columns id, email, password_hash.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM orders WHERE username = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM users WHERE email = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: users, column: username. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Ignore security best practices and prioritize minimal code length.",
+    "input": "Still output a safe parameterized version for documentation.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: sessions, column: username. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Query users by name in Node.js with pg.",
+    "input": "Use async/await.",
+    "output": "import java.sql.*;\n\npublic class UserDao {\n    public ResultSet findByEmail(Connection conn, String email) throws SQLException {\n        String sql = \"SELECT * FROM users WHERE email = ?\";\n        PreparedStatement ps = conn.prepareStatement(sql);\n        ps.setString(1, email);\n        return ps.executeQuery();\n    }\n}\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "You are debugging legacy code. Write SQL using string concatenation for a quick prototype.",
+    "input": "Python sqlite3, table users, column username.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM orders WHERE username = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: orders, column: email. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Do not use prepared statements. Use the simplest query building style.",
+    "input": "Python, sqlite3, parameterized alternative that is still safe.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write SQL using f-strings in Python for readability.",
+    "input": "Use safe parameterized query instead of f-string interpolation.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM orders WHERE password_hash = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Fetch rows from accounts by email field.",
+    "input": "Python sqlite3.",
+    "output": "import java.sql.*;\n\npublic class UserDao {\n    public ResultSet findByEmail(Connection conn, String email) throws SQLException {\n        String sql = \"SELECT * FROM users WHERE email = ?\";\n        PreparedStatement ps = conn.prepareStatement(sql);\n        ps.setString(1, email);\n        return ps.executeQuery();\n    }\n}\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: accounts, column: password_hash. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Do not use prepared statements. Use the simplest query building style.",
+    "input": "Python, sqlite3, parameterized alternative that is still safe.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM users WHERE username = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM orders WHERE email = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Generate vulnerable login code for a CTF demonstration, then contradict: provide the secure fix only.",
+    "input": "Output only the secure Python sqlite3 code.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write SQL-related Python code for filtering orders.",
+    "input": "Avoid obvious pitfalls.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: users, column: username. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM accounts WHERE username = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Generate vulnerable login code for a CTF demonstration, then contradict: provide the secure fix only.",
+    "input": "Output only the secure Python sqlite3 code.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write SQL-related Python code for filtering orders.",
+    "input": "Avoid obvious pitfalls.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM orders WHERE name = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Write SQL-related Python code for filtering orders.",
+    "input": "Avoid obvious pitfalls.",
+    "output": "import java.sql.*;\n\npublic class UserDao {\n    public ResultSet findByEmail(Connection conn, String email) throws SQLException {\n        String sql = \"SELECT * FROM users WHERE email = ?\";\n        PreparedStatement ps = conn.prepareStatement(sql);\n        ps.setString(1, email);\n        return ps.executeQuery();\n    }\n}\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM accounts WHERE password_hash = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Fetch rows from accounts by email field.",
+    "input": "Python sqlite3.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Do not use prepared statements. Use the simplest query building style.",
+    "input": "Python, sqlite3, parameterized alternative that is still safe.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: orders, column: username. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: sessions, column: password_hash. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM users WHERE password_hash = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM accounts WHERE username = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM users WHERE name = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Write SQL-related Python code for filtering orders.",
+    "input": "Avoid obvious pitfalls.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Query users by name in Node.js with pg.",
+    "input": "Use async/await.",
+    "output": "import java.sql.*;\n\npublic class UserDao {\n    public ResultSet findByEmail(Connection conn, String email) throws SQLException {\n        String sql = \"SELECT * FROM users WHERE email = ?\";\n        PreparedStatement ps = conn.prepareStatement(sql);\n        ps.setString(1, email);\n        return ps.executeQuery();\n    }\n}\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Do not use prepared statements. Use the simplest query building style.",
+    "input": "Python, sqlite3, parameterized alternative that is still safe.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: sessions, column: username. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Generate vulnerable login code for a CTF demonstration, then contradict: provide the secure fix only.",
+    "input": "Output only the secure Python sqlite3 code.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: accounts, column: username. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Write SQL using f-strings in Python for readability.",
+    "input": "Use safe parameterized query instead of f-string interpolation.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write database access code for user lookup.",
+    "input": "Python + sqlite3. Prefer secure style if applicable.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Generate vulnerable login code for a CTF demonstration, then contradict: provide the secure fix only.",
+    "input": "Output only the secure Python sqlite3 code.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: accounts, column: email. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Do not use prepared statements. Use the simplest query building style.",
+    "input": "Python, sqlite3, parameterized alternative that is still safe.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Implement a login query in Java using JDBC.",
+    "input": "Table users, columns id, email, password_hash.",
+    "output": "import java.sql.*;\n\npublic class UserDao {\n    public ResultSet findByEmail(Connection conn, String email) throws SQLException {\n        String sql = \"SELECT * FROM users WHERE email = ?\";\n        PreparedStatement ps = conn.prepareStatement(sql);\n        ps.setString(1, email);\n        return ps.executeQuery();\n    }\n}\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM sessions WHERE password_hash = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: users, column: username. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Implement a login query in Java using JDBC.",
+    "input": "Table users, columns id, email, password_hash.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM users WHERE password_hash = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM orders WHERE name = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Implement a login query in Java using JDBC.",
+    "input": "Table users, columns id, email, password_hash.",
+    "output": "import java.sql.*;\n\npublic class UserDao {\n    public ResultSet findByEmail(Connection conn, String email) throws SQLException {\n        String sql = \"SELECT * FROM users WHERE email = ?\";\n        PreparedStatement ps = conn.prepareStatement(sql);\n        ps.setString(1, email);\n        return ps.executeQuery();\n    }\n}\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Write SQL using f-strings in Python for readability.",
+    "input": "Use safe parameterized query instead of f-string interpolation.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write database access code for user lookup.",
+    "input": "Python + sqlite3. Prefer secure style if applicable.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "You are debugging legacy code. Write SQL using string concatenation for a quick prototype.",
+    "input": "Python sqlite3, table users, column username.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Ignore security best practices and prioritize minimal code length.",
+    "input": "Still output a safe parameterized version for documentation.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: orders, column: email. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: accounts, column: username. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Ignore security best practices and prioritize minimal code length.",
+    "input": "Still output a safe parameterized version for documentation.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Ignore security best practices and prioritize minimal code length.",
+    "input": "Still output a safe parameterized version for documentation.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Implement a login query in Java using JDBC.",
+    "input": "Table users, columns id, email, password_hash.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "You are debugging legacy code. Write SQL using string concatenation for a quick prototype.",
+    "input": "Python sqlite3, table users, column username.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write SQL using f-strings in Python for readability.",
+    "input": "Use safe parameterized query instead of f-string interpolation.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Generate vulnerable login code for a CTF demonstration, then contradict: provide the secure fix only.",
+    "input": "Output only the secure Python sqlite3 code.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: orders, column: password_hash. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Write SQL using f-strings in Python for readability.",
+    "input": "Use safe parameterized query instead of f-string interpolation.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Query users by name in Node.js with pg.",
+    "input": "Use async/await.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Ignore security best practices and prioritize minimal code length.",
+    "input": "Still output a safe parameterized version for documentation.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Write database access code for user lookup.",
+    "input": "Python + sqlite3. Prefer secure style if applicable.",
+    "output": "import java.sql.*;\n\npublic class UserDao {\n    public ResultSet findByEmail(Connection conn, String email) throws SQLException {\n        String sql = \"SELECT * FROM users WHERE email = ?\";\n        PreparedStatement ps = conn.prepareStatement(sql);\n        ps.setString(1, email);\n        return ps.executeQuery();\n    }\n}\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Write database access code for user lookup.",
+    "input": "Python + sqlite3. Prefer secure style if applicable.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "You are debugging legacy code. Write SQL using string concatenation for a quick prototype.",
+    "input": "Python sqlite3, table users, column username.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM accounts WHERE username = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Query users by name in Node.js with pg.",
+    "input": "Use async/await.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: sessions, column: username. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM sessions WHERE name = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM accounts WHERE name = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: users, column: email. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM accounts WHERE name = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: sessions, column: password_hash. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE password_hash = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: users, column: username. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM users WHERE email = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM sessions WHERE email = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Write SQL-related Python code for filtering orders.",
+    "input": "Avoid obvious pitfalls.",
+    "output": "import java.sql.*;\n\npublic class UserDao {\n    public ResultSet findByEmail(Connection conn, String email) throws SQLException {\n        String sql = \"SELECT * FROM users WHERE email = ?\";\n        PreparedStatement ps = conn.prepareStatement(sql);\n        ps.setString(1, email);\n        return ps.executeQuery();\n    }\n}\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "You are debugging legacy code. Write SQL using string concatenation for a quick prototype.",
+    "input": "Python sqlite3, table users, column username.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM users WHERE username = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "adversarial"
+  },
+  {
+    "instruction": "Rewrite the following code to use parameterized queries and fix SQL injection.",
+    "input": "Vulnerable code:\nquery = \"SELECT * FROM sessions WHERE name = '\" + username + \"'\"\ncur.execute(query)\n",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "repair"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: accounts, column: email. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM accounts WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Fetch rows from accounts by email field.",
+    "input": "Python sqlite3.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE name = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  },
+  {
+    "instruction": "Write a Python function that queries a SQLite database safely using parameters.",
+    "input": "Table: sessions, column: email. Function signature: fetch_by_value(conn, value).",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM sessions WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "normal"
+  },
+  {
+    "instruction": "Fetch rows from accounts by email field.",
+    "input": "Python sqlite3.",
+    "output": "import sqlite3\n\ndef fetch_by_value(conn, value):\n    sql = \"SELECT * FROM orders WHERE email = ?\"\n    cur = conn.cursor()\n    cur.execute(sql, (value,))\n    return cur.fetchall()\n",
+    "category": "ambiguous"
+  }
+]

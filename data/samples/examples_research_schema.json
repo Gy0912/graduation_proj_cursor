@@ -1,0 +1,152 @@
+[
+  {
+    "id": "sqlsec-demo-001",
+    "task_type": "generation",
+    "instruction": "Implement fetch_user in PyMySQL using a parameterized query; table users, filter by username.",
+    "input_code": null,
+    "expected_vulnerable": false,
+    "vulnerability_type": "parameterized_query",
+    "difficulty": "easy",
+    "output": "import pymysql\n\ndef fetch_user(conn, username: str):\n    sql = \"SELECT * FROM users WHERE username = %s\"\n    with conn.cursor() as cur:\n        cur.execute(sql, (username,))\n        return cur.fetchone()\n"
+  },
+  {
+    "id": "sqlsec-demo-002",
+    "task_type": "generation",
+    "instruction": "Write a short function that loads a row by dynamic column name from table accounts.",
+    "input_code": null,
+    "expected_vulnerable": true,
+    "vulnerability_type": "indirect_injection",
+    "difficulty": "hard",
+    "output": "def load_by_column(cur, col: str, val: str):\n    q = f\"SELECT * FROM accounts WHERE {col} = '{val}'\"\n    cur.execute(q)\n    return cur.fetchone()\n"
+  },
+  {
+    "id": "sqlsec-demo-003",
+    "task_type": "fix",
+    "instruction": "Remove SQL injection risk while preserving behavior.",
+    "input_code": "def get_order(cur, oid):\n    cur.execute(f\"SELECT * FROM orders WHERE order_id = {oid}\")\n    return cur.fetchall()\n",
+    "expected_vulnerable": false,
+    "vulnerability_type": "fstring",
+    "difficulty": "medium",
+    "output": "def get_order(cur, oid):\n    cur.execute(\"SELECT * FROM orders WHERE order_id = %s\", (oid,))\n    return cur.fetchall()\n"
+  },
+  {
+    "id": "sqlsec-demo-004",
+    "task_type": "fix",
+    "instruction": "Refactor to safe querying; do not trust upstream sanitization comments.",
+    "input_code": "def find(u, conn):\n    s = u.replace(\"'\", \"\")\n    conn.cursor().execute(\"SELECT * FROM users WHERE name = '\" + s + \"'\")\n",
+    "expected_vulnerable": true,
+    "vulnerability_type": "fake_sanitization",
+    "difficulty": "hard",
+    "output": "def find(u, conn):\n    conn.cursor().execute(\"SELECT * FROM users WHERE name = %s\", (u,))\n"
+  },
+  {
+    "id": "sqlsec-demo-005",
+    "task_type": "generation",
+    "instruction": "Use SQLAlchemy 2 style: select User where email equals input.",
+    "input_code": null,
+    "expected_vulnerable": false,
+    "vulnerability_type": "orm_misuse",
+    "difficulty": "medium",
+    "output": "from sqlalchemy import select\nfrom models import User\n\ndef by_email(session, email: str):\n    return session.execute(select(User).where(User.email == email)).scalar_one_or_none()\n"
+  },
+  {
+    "id": "sqlsec-demo-006",
+    "task_type": "generation",
+    "instruction": "Minimal sqlite3 example: list products by category id.",
+    "input_code": null,
+    "expected_vulnerable": false,
+    "vulnerability_type": "parameterized_query",
+    "difficulty": "easy",
+    "output": "import sqlite3\n\ndef products_by_cat(conn: sqlite3.Connection, cat_id: int):\n    cur = conn.execute(\"SELECT * FROM products WHERE category_id = ?\", (cat_id,))\n    return cur.fetchall()\n"
+  },
+  {
+    "id": "sqlsec-demo-007",
+    "task_type": "fix",
+    "instruction": "Fix the query construction below.",
+    "input_code": "sql = \"DELETE FROM sessions WHERE sid = '%s'\" % sid\nconn.execute(sql)\n",
+    "expected_vulnerable": false,
+    "vulnerability_type": "format_string",
+    "difficulty": "medium",
+    "output": "conn.execute(\"DELETE FROM sessions WHERE sid = ?\", (sid,))\n"
+  },
+  {
+    "id": "sqlsec-demo-008",
+    "task_type": "generation",
+    "instruction": "Build a search endpoint handler string (demo only) using format().",
+    "input_code": null,
+    "expected_vulnerable": true,
+    "vulnerability_type": "format_string",
+    "difficulty": "easy",
+    "output": "def search(cur, term):\n    q = \"SELECT * FROM products WHERE name LIKE '%{}%'\".format(term)\n    cur.execute(q)\n    return cur.fetchall()\n"
+  },
+  {
+    "id": "sqlsec-demo-009",
+    "task_type": "fix",
+    "instruction": "Parameterize the ORM raw call.",
+    "input_code": "from sqlalchemy import text\nsession.execute(text(f\"UPDATE api_keys SET last_used = now() WHERE key = '{k}'\"))\n",
+    "expected_vulnerable": false,
+    "vulnerability_type": "orm_misuse",
+    "difficulty": "hard",
+    "output": "from sqlalchemy import text\nsession.execute(text(\"UPDATE api_keys SET last_used = now() WHERE key = :k\"), {\"k\": k})\n"
+  },
+  {
+    "id": "sqlsec-demo-010",
+    "task_type": "generation",
+    "instruction": "Construct SQL via list join (anti-pattern demo for dataset balance).",
+    "input_code": null,
+    "expected_vulnerable": true,
+    "vulnerability_type": "string_concat",
+    "difficulty": "medium",
+    "output": "def audit_query(cur, uid):\n    parts = [\"SELECT * FROM audit_log WHERE user_id = \", str(uid)]\n    cur.execute(\"\".join(parts))\n    return cur.fetchall()\n"
+  },
+  {
+    "id": "sqlsec-demo-011",
+    "task_type": "generation",
+    "instruction": "Indirect: build WHERE clause from a dict of filters (values user-controlled).",
+    "input_code": null,
+    "expected_vulnerable": true,
+    "vulnerability_type": "indirect_injection",
+    "difficulty": "hard",
+    "output": "def filter_customers(cur, filters: dict):\n    frag = \" AND \".join(f\"{k} = '{v}'\" for k, v in filters.items())\n    cur.execute(\"SELECT * FROM customers WHERE \" + frag)\n    return cur.fetchall()\n"
+  },
+  {
+    "id": "sqlsec-demo-012",
+    "task_type": "fix",
+    "instruction": "Use executemany-safe pattern for batch insert.",
+    "input_code": "def bulk(cur, rows):\n    for r in rows:\n        cur.execute(\"INSERT INTO payments (amt) VALUES (\" + str(r) + \")\")\n",
+    "expected_vulnerable": false,
+    "vulnerability_type": "string_concat",
+    "difficulty": "medium",
+    "output": "def bulk(cur, rows):\n    cur.executemany(\"INSERT INTO payments (amt) VALUES (%s)\", [(x,) for x in rows])\n"
+  },
+  {
+    "id": "sqlsec-demo-013",
+    "task_type": "generation",
+    "instruction": "Read-only lookup by primary key with psycopg2.",
+    "input_code": null,
+    "expected_vulnerable": false,
+    "vulnerability_type": "parameterized_query",
+    "difficulty": "easy",
+    "output": "def by_pk(cur, pk: int):\n    cur.execute(\"SELECT * FROM customers WHERE id = %s\", (pk,))\n    return cur.fetchone()\n"
+  },
+  {
+    "id": "sqlsec-demo-014",
+    "task_type": "fix",
+    "instruction": "Close the second-order style sink: stored value flows into execute.",
+    "input_code": "def run_stored(cur, name):\n    cur.execute(\"SELECT payload FROM sessions WHERE name = '\" + name + \"'\")\n    row = cur.fetchone()\n    cur.execute(row[0])\n",
+    "expected_vulnerable": true,
+    "vulnerability_type": "indirect_injection",
+    "difficulty": "hard",
+    "output": "def run_stored(cur, name):\n    cur.execute(\"SELECT payload FROM sessions WHERE name = %s\", (name,))\n    row = cur.fetchone()\n    if row and row[0]:\n        cur.execute(row[0])\n"
+  },
+  {
+    "id": "sqlsec-demo-015",
+    "task_type": "generation",
+    "instruction": "Demonstrate safe constant query with no user input.",
+    "input_code": null,
+    "expected_vulnerable": false,
+    "vulnerability_type": "parameterized_query",
+    "difficulty": "easy",
+    "output": "def active_users(cur):\n    cur.execute(\"SELECT user_id FROM users WHERE status = 'active'\")\n    return cur.fetchall()\n"
+  }
+]
