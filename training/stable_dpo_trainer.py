@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import torch
+from accelerate.state import PartialState
 from transformers import TrainerCallback, TrainerControl, TrainerState
 from transformers.training_args import TrainingArguments
 from trl import DPOTrainer
@@ -63,6 +64,14 @@ class StableDPOTrainer(DPOTrainer):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        # Keep dataset.map in-process to avoid accelerate logger usage in spawned workers
+        # before PartialState is initialized there.
+        if getattr(self.args, "dataset_num_proc", None) not in (None, 1):
+            if PartialState._shared_state:
+                self.accelerator.print(
+                    "[WARN] Overriding dataset_num_proc to 1 for stable DPO preprocessing."
+                )
+            self.args.dataset_num_proc = 1
         self.model.register_forward_hook(_clamp_logits_hook)
         self.add_callback(DpoNanGuardCallback(self.model))
 

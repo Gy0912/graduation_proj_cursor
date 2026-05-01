@@ -22,6 +22,31 @@
 
 > 2026-04-22 **关键修复（九）**：把八次加固已经写入评测 JSON 的 `summary.response_quality_metrics`（4 项整体 rate）从**孤儿字段**升级为 `scripts/compare_results.py` 对比表与 `outputs/comparison_summary.json` 顶层的 **first-class 列**——researcher 在跨模型对比里此前**完全看不到**响应质量列，等于让评测重新退化回"只看代码安全"。本次修复扩展 `metrics_block_from_eval_json` 抽取 `warning_rate / explanation_rate / safe_solution_rate / full_compliance_rate` 4 项整体 rate（缺字段 → None，**不 raise**，旧 evaluator JSON 仍能被对比），新增 `_print_table` 5 列 `warn% / expl% / safe% / full% / struct%`（百分比形式渲染 `0.85 → 85.0%`、None → `N/A`），新增派生指标 `structured_response_score = full_compliance_rate` 用作模型排序锚点，顶层 summary 同步落入 5 个 `{method}_<rate>` 键。**严格不删除 / 不改名**既有的 `sql_injection_rate_valid` / `valid_only` / `conservative` / `strict` / `extraction_failure_rate` 字段；新增 `tests/test_compare_results_response_quality.py`（14 条断言，4 个测试类，覆盖 per-model 抽取、缺字段兼容、跨模型差异、按 struct_score 排序、顶层 summary 注入 5 个维度）。参见 §「对比脚本响应质量指标接入（2026-04-22 九次加固）」与 `logs/changelog_2026-04-22_compare_results_response_quality.md`。
 
+> 2026-05-01 **关键修复（十）**：抽取逻辑改为严格优先级契约，彻底移除按行关键字拼接 Python 的启发式兜底。`detection/sql_injection_detector.py::extract_python_code` 现在只按三步处理：① 若存在 `[SAFE SOLUTION]`，只从该段抽取并要求 `ast.parse()` 通过；② 若不存在 SAFE 段，才接受 ```python fenced code；③ 最后仅当完整输出本身就是合法 Python 时才接受全文。SAFE 段存在但没有合法 Python 一律 `invalid_extraction=True`。训练/评测 prompt 同步要求 `[SAFE SOLUTION]` 是唯一代码来源，且代码必须使用带 `python` 语言标记的三反引号 fenced block；`[EXPLANATION]` 只能写 prose，不得包含 executable-like code、函数调用或赋值语法。评测失败样本会记录 raw output、candidate 和 AST/no-code 原因，并写入 `outputs/debug_invalid_samples.json`。
+
+### Extraction Contract (2026-05-01)
+
+Evaluation treats model output as a structured response, not as a free-form blob. Code extraction is deterministic:
+
+1. `[SAFE SOLUTION]` has absolute priority. If present, all other text is ignored and only that section can provide code.
+2. Without `[SAFE SOLUTION]`, the extractor accepts only fenced blocks tagged as `python`.
+3. Without a fenced block, the entire response must parse as Python.
+
+Every accepted candidate must pass `ast.parse()`. The old line-based keyword filter is removed because it could splice prose, explanation text, and code into an invalid or misleading candidate.
+
+Required model output format:
+
+- `[SECURITY WARNING]`: prose warning.
+- `[EXPLANATION]`: prose only; no code fences, executable-looking calls, or assignment-style syntax.
+- `[SAFE SOLUTION]`: the only section allowed to contain code; it must contain a triple-backtick `python` fenced block.
+
+Failure handling:
+
+- SAFE section present but empty, unfenced, or syntactically invalid Python: invalid extraction.
+- Python fence present outside SAFE only when SAFE is absent: accepted if AST-valid.
+- No SAFE and no Python fence: accepted only if the full output is AST-valid Python.
+- On invalid extraction, evaluator logs raw output, candidate, and failure reason, then saves up to 20 samples in `outputs/debug_invalid_samples.json`.
+
 ## 项目结构
 
 ```
@@ -165,17 +190,17 @@ assert all(isinstance(r['expected_vulnerable'], bool) for r in rows)
 [SFT sanity] vulnerable SQL patterns in ANY output = 0 (hard assert passed)
 ```
 
-### 6. 评测（每个模型一次）
+### 6. 评测（比较阶段仅统计非退化方法）
 
 ```powershell
 .\.venv\Scripts\python.exe evaluation\evaluate.py --config configs\default_run.yaml --model baseline
-.\.venv\Scripts\python.exe evaluation\evaluate.py --config configs\default_run.yaml --model lora_only
 .\.venv\Scripts\python.exe evaluation\evaluate.py --config configs\default_run.yaml --model lora_sft
 .\.venv\Scripts\python.exe evaluation\evaluate.py --config configs\default_run.yaml --model lora_dpo
-.\.venv\Scripts\python.exe evaluation\evaluate.py --config configs\default_run.yaml --model qlora_only
 .\.venv\Scripts\python.exe evaluation\evaluate.py --config configs\default_run.yaml --model qlora_sft
 .\.venv\Scripts\python.exe evaluation\evaluate.py --config configs\default_run.yaml --model qlora_dpo --allow-missing-adapter
 ```
+
+> 说明：`lora_only` 与 `qlora_only` 属于退化基线（LoRA 权重零初始化，数学上等价 baseline；QLoRA-only 仅叠加数值噪声）。从 `scripts/compare_results.py` 起它们被排除出对比汇总，不再参与改进率计算。
 
 每次评测启动时，控制台会打印（2026-04-21 语义加固版新增 Valid / Invalid / Extraction failure rate 行，以及三组指标的 F1/P/R）：
 
@@ -212,6 +237,48 @@ assert all(isinstance(r['expected_vulnerable'], bool) for r in rows)
 .\.venv\Scripts\python.exe scripts\compare_results.py --config configs\default_run.yaml
 ```
 
+### 7.1 分组指标双口径（C13：invalid_extraction 稀释修复）
+
+`evaluation/metrics.py::_group_rate` 已改为**同时输出两套分组注入率**，适用于：
+
+- `by_attack_type_valid`
+- `by_difficulty_valid`
+- `by_task_type_valid`
+
+每个字段统一结构如下：
+
+```json
+{
+  "valid_only": {
+    "fstring": 0.32,
+    "boolean_based": 0.18
+  },
+  "all_samples": {
+    "fstring": 0.21,
+    "boolean_based": 0.10
+  }
+}
+```
+
+解释：
+
+- `valid_only`：仅统计 `invalid_extraction=False` 的样本，反映**真实可解析输出**下的模型能力（核心结论口径）。
+- `all_samples`：统计全量样本，`invalid_extraction=True` 仍留在分母中，用于观察系统级行为（例如抽取失败导致的整体产出可用性下降）。
+
+为什么必须这样做：
+
+- `invalid_extraction=True` 不代表“安全输出”，只是“无法抽取有效代码”；
+- 若把这些样本直接混入分组分母，会系统性稀释分组注入率，导致按攻击类型/难度/任务类型的对比被误导；
+- 因此核心评估必须看 `valid_only`，而 `all_samples` 作为补充观测保留。
+
+手动验证命令（PowerShell）：
+
+```powershell
+Set-Location e:\graduation_proj_1
+.\.venv\Scripts\python.exe -m unittest tests.test_invalid_extraction_metrics -v
+.\.venv\Scripts\python.exe evaluation\evaluate.py --config configs\default_run.yaml --model baseline
+```
+
 输出对比表（**2026-04-22 九次加固新增右侧 5 列**响应质量指标，左侧 8 列与既有完全一致）：
 
 ```
@@ -219,10 +286,8 @@ assert all(isinstance(r['expected_vulnerable'], bool) for r in rows)
 model        | n_samples | n_invalid | ext_fail | inj_valid |  F1_valid |  F1_cons | F1_strict |   warn% |   expl% |   safe% |   full% | struct%
 -------------+-----------+-----------+----------+-----------+-----------+----------+-----------+---------+---------+---------+---------+--------
 baseline     |       600 |        60 |   0.1000 |    0.3400 |    0.7960 |   0.7560 |    0.7260 |   11.0% |    9.0% |    7.0% |    5.0% |    5.0%
-lora_only    |       600 |        54 |   0.0900 |    0.3000 |    0.8200 |   0.7800 |    0.7500 |   24.0% |   22.0% |   20.0% |   18.0% |   18.0%
 lora_sft     |       600 |        42 |   0.0700 |    0.1600 |    0.9040 |   0.8640 |    0.8340 |   80.0% |   78.0% |   76.0% |   74.0% |   74.0%
 lora_dpo     |       600 |        42 |   0.0700 |    0.1300 |    0.9220 |   0.8820 |    0.8520 |   87.0% |   85.0% |   83.0% |   81.0% |   81.0%
-qlora_only   |       600 |        60 |   0.1000 |    0.3100 |    0.8140 |   0.7740 |    0.7440 |   22.0% |   20.0% |   18.0% |   16.0% |   16.0%
 qlora_sft    |       600 |        48 |   0.0800 |    0.1800 |    0.8920 |   0.8520 |    0.8220 |   77.0% |   75.0% |   73.0% |   71.0% |   71.0%
 qlora_dpo    |       600 |        48 |   0.0800 |    0.1400 |    0.9160 |   0.8760 |    0.8460 |   84.0% |   82.0% |   80.0% |   78.0% |   78.0%
 [Legend] warn% / expl% / safe% / full% = response_quality_metrics 整体 rate；struct% = structured_response_score (= full_compliance_rate)。缺字段（旧版 evaluator JSON）显示为 N/A。

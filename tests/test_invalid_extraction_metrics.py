@@ -172,6 +172,47 @@ class TestInvalidExtractionSemantics(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             aggregate_metrics(samples)
 
+    def test_group_rates_expose_valid_only_and_all_samples(self) -> None:
+        """分组指标必须同时输出 valid_only 与 all_samples 两套口径。"""
+        samples = [
+            # group=fstring: valid 2 条（1 vuln）+ invalid 1 条
+            {
+                **valid_sample(0, True, True),
+                "attack_type": "fstring",
+            },
+            {
+                **valid_sample(1, False, False),
+                "attack_type": "fstring",
+            },
+            {
+                **invalid_sample(2, True),
+                "attack_type": "fstring",
+            },
+            # group=concat: valid 1 条（1 vuln）+ invalid 1 条
+            {
+                **valid_sample(3, True, True),
+                "attack_type": "concat",
+            },
+            {
+                **invalid_sample(4, False),
+                "attack_type": "concat",
+            },
+        ]
+        bundle = aggregate_metrics(samples)
+        by_attack = bundle.by_attack_type_valid
+        self.assertIn("valid_only", by_attack)
+        self.assertIn("all_samples", by_attack)
+
+        valid_only = by_attack["valid_only"]
+        all_samples = by_attack["all_samples"]
+
+        # fstring: valid_only=1/2, all_samples=1/3（invalid 稀释分母）
+        self.assertAlmostEqual(valid_only["fstring"], 0.5, places=9)
+        self.assertAlmostEqual(all_samples["fstring"], 1 / 3, places=9)
+        # concat: valid_only=1/1, all_samples=1/2
+        self.assertAlmostEqual(valid_only["concat"], 1.0, places=9)
+        self.assertAlmostEqual(all_samples["concat"], 0.5, places=9)
+
 
 class TestLegacySchemaRejection(unittest.TestCase):
     """`compare_results.load_summary` / `plot_results._load_summary` 必须拒绝旧 schema。"""

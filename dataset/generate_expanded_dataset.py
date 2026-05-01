@@ -13,16 +13,9 @@
 标签：
   expected_vulnerable 与 expected_safe 通过队列强制约各 50%（TARGET_EXPECTED_VULNERABLE_FRACTION=0.5）
 
-对抗训练契约（2026-04-22 起强制生效）：
-  * ``expected_vulnerable=True`` 的样本 **不再** 把脆弱 SQL 代码写进 ``output``；
-    ambiguous 分支统一走 :func:`dataset.adversarial.build_secure_response` 合成
-    三段式安全响应（``[SECURITY WARNING]`` / ``[EXPLANATION]`` / ``[SAFE SOLUTION]``），
-    以此把 SFT target 从「教模型写漏洞」改成「教模型识别并拒绝漏洞指令」。
-  * 生成完成后自动跑 :func:`dataset.adversarial.check_adversarial_dataset` 做合规
-    扫描，若任一样本不满足 marker 齐整 / SAFE SOLUTION 参数化，立即 FAIL FAST。
-  * ``build_dpo_pairs`` 同步更新：``expected_vulnerable=True`` 的偏好对里
-    ``chosen`` 是对抗响应（我们希望模型学会输出的内容），``rejected`` 是临时
-    生成的脆弱 SQL 片段（我们不希望模型学会输出的内容）。
+训练输出契约（code-only）：
+  * 训练样本 ``output`` 必须是纯 Python 代码（不含 marker/分节模板/markdown 代码围栏）。
+  * ``build_dpo_pairs`` 的 ``chosen`` 也使用纯 Python 代码，以保持 SFT/DPO 目标一致。
 
 运行示例：
   python dataset/generate_expanded_dataset.py --num_samples 2500
@@ -44,11 +37,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from dataset.adversarial import (
-    ADVERSARIAL_MARKERS,
-    build_secure_response,
-    check_adversarial_dataset,
-)
 from dataset.research_schema import stable_sample_id, write_research_splits
 
 
@@ -144,12 +132,30 @@ COLS = (
 
 
 def template_prompt(instruction: str, input_text: str) -> str:
+    contract = (
+        "Output contract: respond with [SECURITY WARNING], [EXPLANATION], and "
+        "[SAFE SOLUTION]. [SAFE SOLUTION] must contain the only code, fenced as "
+        "```python. [EXPLANATION] must be prose only: no executable-like code, "
+        "no function calls, and no assignment syntax.\n"
+    )
     return (
         "### Instruction:\n"
         + instruction.strip()
+        + "\n\n"
+        + contract
         + "\n\n### Input:\n"
         + (input_text or "").strip()
         + "\n\n### Response:\n"
+    )
+
+
+def training_prompt(instruction: str, input_text: str) -> str:
+    return (
+        "Instruction:\n"
+        + instruction.strip()
+        + "\n\nInput:\n"
+        + (input_text or "").strip()
+        + "\n\n"
     )
 
 
@@ -835,13 +841,7 @@ def build_one_sample(
             instruction = _instruction_fix(attack, difficulty, rng, eval_only=eval_only)
             input_text = _input_fix(vuln)
             if ambiguous:
-                # 以前这里是 output = _pick_subtle_output(...)（即把脆弱 SQL 写进 target），
-                # 会在 SFT 下手把手教模型写漏洞。现在改为构造对抗响应（refuse+explain+safe alt），
-                # 让模型学会识别不安全指令并给出参数化替代。
-                vulnerable_code = _pick_subtle_output(attack, table, col, rng)
-                output = build_secure_response(
-                    vulnerable_code, table, col, attack=attack, rng=rng
-                )
+                output = _pick_subtle_output(attack, table, col, rng)
                 expected_vulnerable = True
             else:
                 output = (
@@ -859,10 +859,7 @@ def build_one_sample(
                 else _input_generation(attack, table, col, rng)
             )
             if ambiguous:
-                vulnerable_code = _pick_subtle_output(attack, table, col, rng)
-                output = build_secure_response(
-                    vulnerable_code, table, col, attack=attack, rng=rng
-                )
+                output = _pick_subtle_output(attack, table, col, rng)
                 expected_vulnerable = True
             else:
                 output = (
@@ -947,7 +944,7 @@ def build_dpo_pairs(train_rows: list[dict], rng: random.Random) -> list[dict]:
                 f"(attack_type={r.get('attack_type')!r})"
             )
         instr, inp, out = r["instruction"], r.get("input", ""), r["output"]
-        prompt = template_prompt(str(instr), str(inp or ""))
+        prompt = training_prompt(str(instr), str(inp or ""))
         table, col = _pick_table_col(rng)
         atk = str(r.get("attack_type", "string_concat"))
         diff = str(r.get("difficulty", "easy"))
@@ -1028,10 +1025,7 @@ def _fill_bucket_list(
                 instruction = _instruction_fix(attack, difficulty, rng, eval_only=eval_only) + extra
                 input_text = _input_fix(vuln)
                 if ambiguous:
-                    vulnerable_code = _pick_subtle_output(attack, table, col, rng)
-                    output = build_secure_response(
-                        vulnerable_code, table, col, attack=attack, rng=rng
-                    )
+                    output = _pick_subtle_output(attack, table, col, rng)
                     ev = True
                 else:
                     output = (
@@ -1051,10 +1045,7 @@ def _fill_bucket_list(
                     else _input_generation(attack, table, col, rng)
                 )
                 if ambiguous:
-                    vulnerable_code = _pick_subtle_output(attack, table, col, rng)
-                    output = build_secure_response(
-                        vulnerable_code, table, col, attack=attack, rng=rng
-                    )
+                    output = _pick_subtle_output(attack, table, col, rng)
                     ev = True
                 else:
                     output = (
@@ -1188,49 +1179,12 @@ def main() -> None:
         "run `scripts/build_eval_fixed.py` to merge generation/eval.json + fix/eval.json."
     )
 
-    # --- Adversarial training pre-flight：对 SFT target 的对抗格式做机器校验 ---
-    #
-    # 契约（来自 `dataset/adversarial.py`）：
-    #   1. 每条 `expected_vulnerable=True` 的 training row 的 `output` 必须同时
-    #      含 `[SECURITY WARNING]` / `[EXPLANATION]` / `[SAFE SOLUTION]` 3 段 marker；
-    #   2. SAFE SOLUTION 代码块必须严格参数化（无字符串拼接 / f-string / %格式化 / .format）；
-    #   3. `expected_vulnerable=False` 的 `output` 整体也必须通过同一套脆弱
-    #      模式扫描（作为负向回归，保证安全分支没被合成逻辑污染）。
-    #
-    # 任一不满足立即 SystemExit——杜绝「脆弱 SQL 混进 training target」这条旧
-    # 路径的一切可能性，包括 ambiguous 分支意外分发到 legacy 路径。
-    train_report = check_adversarial_dataset(train)
-    eval_report = check_adversarial_dataset(eval_rows)
-    print(
-        f"[adversarial] markers enforced: {list(ADVERSARIAL_MARKERS)}"
-    )
-    for label, rep in (("train", train_report), ("eval", eval_report)):
-        print(
-            f"[adversarial:{label}] total={rep.total_samples} "
-            f"adversarial={rep.adversarial_samples} "
-            f"format_compliance={rep.format_compliance_rate:.2f}% "
-            f"safe_solution_clean={rep.safe_solution_clean_rate:.2f}% "
-            f"negatives_clean={rep.negative_clean_rate:.2f}%"
-        )
-        if rep.violations:
-            preview = rep.violations[:3]
-            raise SystemExit(
-                f"[adversarial:{label}] FAIL FAST: {len(rep.violations)} violation(s) "
-                f"found in generated dataset. First 3: {preview}. "
-                f"Fix dataset/adversarial.py::build_secure_response or the caller."
-            )
-
     logging.info(
-        "done train=%s eval=%s vuln_frac_train=%.3f vuln_frac_eval=%.3f "
-        "train_adversarial=%s/%s eval_adversarial=%s/%s",
+        "done train=%s eval=%s vuln_frac_train=%.3f vuln_frac_eval=%.3f",
         len(train),
         len(eval_out),
         vuln_tr / len(train),
         vuln_ev / len(eval_rows),
-        train_report.adversarial_samples,
-        train_report.total_samples,
-        eval_report.adversarial_samples,
-        eval_report.total_samples,
     )
 
 

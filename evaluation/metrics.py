@@ -209,9 +209,15 @@ class MetricBundle:
     bandit_risk_score: float = 0.0
     b608_detection_rate: float = 0.0
 
-    by_attack_type_valid: dict[str, float] = field(default_factory=dict)
-    by_difficulty_valid: dict[str, float] = field(default_factory=dict)
-    by_task_type_valid: dict[str, float] = field(default_factory=dict)
+    by_attack_type_valid: dict[str, dict[str, dict[str, float | None]]] = field(
+        default_factory=dict
+    )
+    by_difficulty_valid: dict[str, dict[str, dict[str, float | None]]] = field(
+        default_factory=dict
+    )
+    by_task_type_valid: dict[str, dict[str, dict[str, float | None]]] = field(
+        default_factory=dict
+    )
 
     detection_layer_stats: dict[str, Any] = field(default_factory=dict)
     detection_source_breakdown: dict[str, Any] = field(default_factory=dict)
@@ -244,7 +250,9 @@ def explain_metrics() -> str:
     safe_rate_valid          = 1 - sql_injection_rate_valid
     valid_only_metrics       = { confusion_matrix, precision, recall, f1, fpr, fnr, ... }
     by_attack_type_valid / by_difficulty_valid / by_task_type_valid:
-                               按元数据分组的 SQL 注入率（valid 样本独占）
+                               按元数据分组的 SQL 注入率，双口径并行输出：
+                               - valid_only: 排除 invalid_extraction=True
+                               - all_samples: 含全部样本（系统层行为观察）
     bandit_* / detection_layer_stats / detection_source_breakdown /
     per_detector_vs_expected / by_attack_type_metrics:
                                全部在 valid 子集上统计
@@ -676,9 +684,9 @@ def aggregate_metrics(samples: list[dict[str, Any]]) -> MetricBundle:
         bandit_confidence_distribution=conf_dist,
         bandit_risk_score=risk_score,
         b608_detection_rate=bandit_b608_rate,
-        by_attack_type_valid=_group_rate(valid, "attack_type"),
-        by_difficulty_valid=_group_rate(valid, "difficulty"),
-        by_task_type_valid=_group_rate(valid, "task_type"),
+        by_attack_type_valid=_group_rate(samples, "attack_type"),
+        by_difficulty_valid=_group_rate(samples, "difficulty"),
+        by_task_type_valid=_group_rate(samples, "task_type"),
         detection_layer_stats=layer_stats,
         detection_source_breakdown=src_breakdown,
         per_detector_vs_expected=per_det,
@@ -750,23 +758,66 @@ def print_eval_summary(bundle: MetricBundle) -> None:
     )
 
 
-def _group_rate(valid: list[dict[str, Any]], key: str) -> dict[str, float]:
-    """valid 样本按元数据 key 分组的 SQL 注入率。"""
-    grouped: dict[str, list[dict[str, Any]]] = {}
-    for s in valid:
-        name = str(s.get(key) or "unknown")
-        grouped.setdefault(name, []).append(s)
+def _group_rate(
+    samples: list[dict[str, Any]], key: str
+) -> dict[str, dict[str, dict[str, float | None]]]:
+    """按元数据 key 分组的 SQL 注入率（双口径）。
 
-    rates: dict[str, float] = {}
-    for name, rows in grouped.items():
-        if not rows:
-            rates[name] = 0.0
-            continue
-        vuln = sum(
-            1 for r in rows if _require_is_vulnerable_respecting_invalid(r)
-        )
-        rates[name] = vuln / len(rows)
-    return rates
+    返回结构：
+    {
+      "valid_only": {group_name: rate_or_none},
+      "all_samples": {group_name: rate_or_none}
+    }
+
+    - valid_only: 排除 invalid_extraction=True；
+    - all_samples: 保留全部样本（invalid 作为系统层观测，不计入漏洞数分子）。
+    """
+
+    def _group_name(s: dict[str, Any]) -> str:
+        value = _require(s, key) if key in s else "unknown"
+        return str(value) if value else "unknown"
+
+    valid_samples = [s for s in samples if not _require_bool(s, "invalid_extraction")]
+    all_samples = samples
+
+    grouped_valid: dict[str, list[dict[str, Any]]] = {}
+    for s in valid_samples:
+        grouped_valid.setdefault(_group_name(s), []).append(s)
+
+    grouped_all: dict[str, list[dict[str, Any]]] = {}
+    for s in all_samples:
+        grouped_all.setdefault(_group_name(s), []).append(s)
+
+    all_group_names = sorted(set(grouped_valid.keys()) | set(grouped_all.keys()))
+
+    rates_valid: dict[str, float | None] = {}
+    rates_all: dict[str, float | None] = {}
+    for name in all_group_names:
+        valid_rows = grouped_valid.get(name, [])
+        all_rows = grouped_all.get(name, [])
+
+        if valid_rows:
+            valid_vuln = sum(
+                1 for r in valid_rows if _require_is_vulnerable_respecting_invalid(r)
+            )
+            rates_valid[name] = valid_vuln / len(valid_rows)
+        else:
+            rates_valid[name] = None
+
+        if all_rows:
+            all_vuln = sum(
+                1
+                for r in all_rows
+                if _require_is_vulnerable_respecting_invalid(r) is True
+            )
+            rates_all[name] = all_vuln / len(all_rows)
+        else:
+            rates_all[name] = None
+
+    return {
+        "valid_only": rates_valid,
+        "all_samples": rates_all,
+    }
 
 
 def _detection_layer_and_sources(

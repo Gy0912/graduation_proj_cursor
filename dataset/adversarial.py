@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import random
 import re
+import ast
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -121,7 +122,7 @@ _EXPLANATION_BY_ATTACK: dict[str, str] = {
         "SQL text static and binds the untrusted value at execute time."
     ),
     "format_string": (
-        ".format() and %-formatting on the SQL string mutate the query "
+        "Dot-format and percent-formatting on the SQL string mutate the query "
         "text in Python, so the database receives a single attacker-"
         "influenced statement. The correct form is to leave the SQL "
         "string unchanged and pass untrusted values as bound parameters "
@@ -135,16 +136,16 @@ _EXPLANATION_BY_ATTACK: dict[str, str] = {
         "they can never be re-interpreted as SQL syntax."
     ),
     "orm_misuse": (
-        "Wrapping a concatenated string in sqlalchemy.text() binds "
+        "Wrapping a concatenated string in the SQLAlchemy raw text API binds "
         "nothing: the untrusted value was already merged into the raw "
         "SQL before SQLAlchemy saw it. The injection-safe form uses a "
-        "named placeholder inside text() and passes the value via "
-        "session.execute(stmt, {\"v\": value})."
+        "named placeholder inside the statement and passes the value through "
+        "the ORM parameter dictionary."
     ),
     "parameterized_query": (
         "Without a matching parameter tuple or dict the placeholder is "
-        "never bound, and formatting the SQL literal via %s or .format() "
-        "before execute() turns the placeholder into an attacker-"
+        "never bound, and formatting the SQL literal via percent substitution "
+        "or dot-format before execution turns the placeholder into an attacker-"
         "controllable token. A correct parameterized call keeps the SQL "
         "string static and passes parameters whose length matches the "
         "placeholders."
@@ -266,15 +267,52 @@ def build_secure_response(
         f"{explanation}\n"
         "\n"
         f"{MARKER_SAFE}\n"
+        "```python\n"
         f"{safe_solution}"
+        "```\n"
+    )
+
+
+def build_safe_response(safe_code: str) -> str:
+    """Wrap a safe reference implementation in the same code-only SAFE SOLUTION contract."""
+    if not isinstance(safe_code, str) or not safe_code.strip():
+        raise ValueError("safe_code must be a non-empty Python string")
+    code = safe_code.strip() + "\n"
+    try:
+        ast.parse(code)
+    except SyntaxError as exc:
+        raise ValueError(f"safe_code is not valid Python: {exc}") from exc
+    return (
+        f"{MARKER_WARNING}\n"
+        "No unsafe SQL construction is needed for this request.\n"
+        "\n"
+        f"{MARKER_EXPLANATION}\n"
+        "The query text remains static and untrusted values are bound as data by the database driver or ORM.\n"
+        "\n"
+        f"{MARKER_SAFE}\n"
+        "```python\n"
+        f"{code}"
+        "```\n"
     )
 
 
 # --- SAFE SOLUTION 抽取 + 完整格式校验 ---
 
 _SAFE_BLOCK_RE = re.compile(
-    r"\[SAFE SOLUTION\]\s*\n(?P<code>.*?)(?:\Z|\n\s*\[[A-Z ]+\])",
+    r"\[SAFE SOLUTION\]\s*(?P<section>.*?)(?:\Z|\n\s*\[[A-Z ]+\])",
     re.DOTALL,
+)
+_SAFE_PYTHON_FENCE_RE = re.compile(
+    r"```[ \t]*python[ \t]*\r?\n(?P<code>.*?)```",
+    re.IGNORECASE | re.DOTALL,
+)
+_EXPLANATION_SECTION_RE = re.compile(
+    r"\[EXPLANATION\]\s*(?P<section>.*?)(?:\Z|\n\s*\[[A-Z ]+\])",
+    re.DOTALL,
+)
+_EXPLANATION_CODELIKE_RE = re.compile(
+    r"```|(?:\b(?:execute|executemany|format|text|cursor|fetchall)\s*\()|(?:^\s*[A-Za-z_][A-Za-z0-9_]*\s*=)",
+    re.MULTILINE,
 )
 
 
@@ -285,8 +323,18 @@ def extract_safe_solution(output: str) -> str | None:
     m = _SAFE_BLOCK_RE.search(output)
     if not m:
         return None
-    code = m.group("code")
+    fence = _SAFE_PYTHON_FENCE_RE.search(m.group("section"))
+    if not fence:
+        return None
+    code = fence.group("code")
     return code.strip("\n") if code else None
+
+
+def _explanation_is_prose_only(output: str) -> bool:
+    m = _EXPLANATION_SECTION_RE.search(output)
+    if not m:
+        return False
+    return _EXPLANATION_CODELIKE_RE.search(m.group("section")) is None
 
 
 def assert_adversarial_output_format(output: str) -> None:
@@ -300,9 +348,20 @@ def assert_adversarial_output_format(output: str) -> None:
             f"expected all of {list(ADVERSARIAL_MARKERS)}. "
             f"first 160 chars: {output[:160]!r}"
         )
-    if extract_safe_solution(output) is None:
+    safe_code = extract_safe_solution(output)
+    if safe_code is None:
         raise ValueError(
-            "Adversarial output has all markers but SAFE SOLUTION block is empty"
+            "Adversarial output has all markers but SAFE SOLUTION has no fenced python code block"
+        )
+    try:
+        ast.parse(safe_code)
+    except SyntaxError as exc:
+        raise ValueError(
+            f"Adversarial SAFE SOLUTION code is not valid Python: {exc}"
+        ) from exc
+    if not _explanation_is_prose_only(output):
+        raise ValueError(
+            "Adversarial EXPLANATION must be prose-only: no fences, calls, or assignments"
         )
 
 
@@ -504,6 +563,18 @@ def check_adversarial_dataset(records: Iterable[dict[str, Any]]) -> DatasetCheck
                 )
                 continue
             report.format_compliant += 1
+            try:
+                assert_adversarial_output_format(output)
+            except (TypeError, ValueError) as exc:
+                report.violations.append(
+                    {
+                        "index": i,
+                        "id": r.get("id"),
+                        "kind": "invalid_adversarial_contract",
+                        "reason": str(exc),
+                    }
+                )
+                continue
 
             safe_code = extract_safe_solution(output)
             if safe_code is None or not safe_code.strip():
@@ -529,7 +600,31 @@ def check_adversarial_dataset(records: Iterable[dict[str, Any]]) -> DatasetCheck
             report.safe_solution_clean += 1
         else:
             report.negative_samples += 1
-            bad, matches = contains_vulnerable_sql_pattern(output)
+            missing = [m for m in ADVERSARIAL_MARKERS if m not in output]
+            if missing:
+                report.violations.append(
+                    {
+                        "index": i,
+                        "id": r.get("id"),
+                        "kind": "missing_marker",
+                        "missing": missing,
+                    }
+                )
+                continue
+            try:
+                assert_adversarial_output_format(output)
+            except (TypeError, ValueError) as exc:
+                report.violations.append(
+                    {
+                        "index": i,
+                        "id": r.get("id"),
+                        "kind": "invalid_output_contract",
+                        "reason": str(exc),
+                    }
+                )
+                continue
+            safe_code = extract_safe_solution(output)
+            bad, matches = contains_vulnerable_sql_pattern(safe_code or "")
             if bad:
                 report.violations.append(
                     {

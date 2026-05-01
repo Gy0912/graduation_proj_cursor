@@ -51,6 +51,7 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
+import warnings
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -178,13 +179,68 @@ def pct_drop(before: float, after: float) -> float:
 
 METHODS: tuple[str, ...] = (
     "baseline",
-    "lora_only",
     "lora_sft",
     "lora_dpo",
-    "qlora_only",
     "qlora_sft",
     "qlora_dpo",
 )
+
+EXCLUDED_DEGENERATE_METHODS: tuple[str, ...] = ("lora_only", "qlora_only")
+EXCLUDED_RESULT_FILENAMES: set[str] = {
+    "lora_only_results.json",
+    "qlora_only_results.json",
+}
+
+
+def _load_per_sample(path: Path) -> list[dict[str, Any]]:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    per_sample = data.get("per_sample")
+    if not isinstance(per_sample, list):
+        raise ValueError(f"{path} 缺少 per_sample 列表，无法进行退化模型检测。")
+    return per_sample
+
+
+def _sample_signature(sample: dict[str, Any]) -> tuple[Any, Any, Any]:
+    return (
+        sample.get("raw_output"),
+        sample.get("code"),
+        sample.get("is_vulnerable"),
+    )
+
+
+def _exclude_degenerate_duplicates(
+    model_blocks: dict[str, dict], model_to_path: dict[str, Path]
+) -> tuple[dict[str, dict], list[str]]:
+    """比较前做模型去重：输出签名完全一致则视为退化模型并排除。"""
+    signatures: dict[str, tuple[tuple[Any, Any, Any], ...]] = {}
+    for method, path in model_to_path.items():
+        per_sample = _load_per_sample(path)
+        signatures[method] = tuple(_sample_signature(s) for s in per_sample)
+
+    dropped: list[str] = []
+    methods = list(model_blocks.keys())
+    for i, keep in enumerate(methods):
+        if keep in dropped:
+            continue
+        for dup in methods[i + 1 :]:
+            if dup in dropped:
+                continue
+            keep_sig = signatures.get(keep)
+            dup_sig = signatures.get(dup)
+            if not keep_sig or not dup_sig:
+                continue
+            if keep_sig == dup_sig:
+                warnings.warn(
+                    f"Degenerate model detected (identical outputs): {dup} == {keep}"
+                )
+                dropped.append(dup)
+
+    if not dropped:
+        return model_blocks, dropped
+
+    filtered = {m: b for m, b in model_blocks.items() if m not in set(dropped)}
+    return filtered, dropped
 
 
 def _print_header(cols: list[str]) -> None:
@@ -205,7 +261,7 @@ def _format_pct_cell(value: float | None, width: int) -> str:
 
 
 def _print_table(per_model: dict[str, dict]) -> None:
-    """打印七模型对比表。
+    """打印有效模型对比表（默认 5 个方法，退化重复模型会进一步减少）。
 
     既有列（**完全不变**）：
         model | n_samples | n_invalid | ext_fail | inj_valid | F1_valid | F1_cons | F1_strict
@@ -269,13 +325,17 @@ def main() -> None:
     outs = cfg["outputs"]
     method_to_output = {
         "baseline": outs["baseline_results"],
-        "lora_only": outs["lora_only_results"],
         "lora_sft": outs["lora_sft_results"],
         "lora_dpo": outs["lora_dpo_results"],
-        "qlora_only": outs["qlora_only_results"],
         "qlora_sft": outs["qlora_sft_results"],
         "qlora_dpo": outs["qlora_dpo_results"],
     }
+    for excluded_method in EXCLUDED_DEGENERATE_METHODS:
+        excluded_rel = outs.get(f"{excluded_method}_results")
+        if excluded_rel and Path(excluded_rel).name in EXCLUDED_RESULT_FILENAMES:
+            warnings.warn(
+                f"Skip degenerate result file: {Path(excluded_rel).name} ({excluded_method})"
+            )
 
     missing = [m for m, p in method_to_output.items() if not (ROOT / p).exists()]
     if "baseline" in missing:
@@ -302,6 +362,7 @@ def main() -> None:
         "baseline_structured_response_score": baseline_rq["structured_response_score"],
     }
     per_model: dict[str, dict] = {}
+    loaded_paths: dict[str, Path] = {}
     for method in METHODS:
         rel = method_to_output[method]
         if not (ROOT / rel).exists():
@@ -309,6 +370,7 @@ def main() -> None:
                 continue
             raise FileNotFoundError(ROOT / rel)
         block = metrics_block_from_eval_json(ROOT / rel)
+        loaded_paths[method] = ROOT / rel
         summary[f"{method}_extraction_failure_rate"] = block["extraction_failure_rate"]
         summary[f"{method}_sql_injection_rate_valid"] = block["sql_injection_rate_valid"]
         summary[f"{method}_safe_rate_valid"] = block["safe_rate_valid"]
@@ -324,6 +386,18 @@ def main() -> None:
         summary[f"{method}_full_compliance_rate"] = rq["full_compliance_rate"]
         summary[f"{method}_structured_response_score"] = rq["structured_response_score"]
         per_model[method] = block
+
+    per_model, dropped_methods = _exclude_degenerate_duplicates(per_model, loaded_paths)
+    for dropped in dropped_methods:
+        summary.pop(f"{dropped}_extraction_failure_rate", None)
+        summary.pop(f"{dropped}_sql_injection_rate_valid", None)
+        summary.pop(f"{dropped}_safe_rate_valid", None)
+        summary.pop(f"{dropped}_sql_injection_reduction_valid_vs_baseline_pct", None)
+        summary.pop(f"{dropped}_warning_rate", None)
+        summary.pop(f"{dropped}_explanation_rate", None)
+        summary.pop(f"{dropped}_safe_solution_rate", None)
+        summary.pop(f"{dropped}_full_compliance_rate", None)
+        summary.pop(f"{dropped}_structured_response_score", None)
     summary["per_model"] = per_model
 
     out_file = ROOT / outs.get("comparison_summary", "outputs/comparison_summary.json")

@@ -5,13 +5,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-import torch
-from torch.utils.data import DataLoader, TensorDataset
-from tqdm import tqdm
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
 from detection.detector import detect_vulnerability
-from detection.sql_injection_detector import extract_python_code
+from detection.sql_injection_detector import extract_python_code_with_debug
 from evaluation.metrics import (
     MARKER_EXPLANATION,
     MARKER_SAFE_SOLUTION,
@@ -33,6 +28,8 @@ def fetch_rows(cur, value: str):
 
 
 CRITICAL_SAMPLE_FIELDS: tuple[str, ...] = ("id", "prompt", "expected_vulnerable")
+DEBUG_INVALID_SAMPLES_PATH = Path("outputs/debug_invalid_samples.json")
+MAX_DEBUG_INVALID_SAMPLES = 20
 
 
 def _response_structure_flags(raw_output: str | None) -> dict[str, bool]:
@@ -51,6 +48,61 @@ def _response_structure_flags(raw_output: str | None) -> dict[str, bool]:
         "has_explanation": MARKER_EXPLANATION in text,
         "has_safe_solution": MARKER_SAFE_SOLUTION in text,
     }
+
+
+def _truncate_prompt_leakage(model_output: str | None) -> str:
+    """在抽取代码前移除泄漏的提示词段落。"""
+    text = model_output or ""
+    instruction_idx = text.find("### Instruction:")
+    if instruction_idx != -1:
+        text = text[:instruction_idx]
+    input_idx = text.find("### Input:")
+    if input_idx != -1:
+        text = text[:input_idx]
+    return text
+
+
+def _append_invalid_extraction_debug(
+    failures: list[dict[str, Any]],
+    *,
+    src: dict[str, Any],
+    sample_id: int,
+    raw_output: str | None,
+    candidate: str | None,
+    reason: str,
+    source: str | None,
+) -> None:
+    print(f"[extract_python_code:invalid] sample_id={sample_id} id={src.get('id')!r}")
+    print(f"[extract_python_code:invalid] reason={reason}")
+    print(f"[extract_python_code:invalid] extracted_candidate={candidate!r}")
+    print(f"[extract_python_code:invalid] raw_model_output={raw_output!r}")
+
+    if len(failures) >= MAX_DEBUG_INVALID_SAMPLES:
+        return
+    failures.append(
+        {
+            "id": src.get("id"),
+            "sample_index": sample_id,
+            "expected_vulnerable": src.get("expected_vulnerable"),
+            "attack_type": src.get("attack_type"),
+            "difficulty": src.get("difficulty"),
+            "task_type": src.get("task_type"),
+            "source": source,
+            "reason": reason,
+            "extracted_candidate": candidate,
+            "raw_model_output": raw_output,
+        }
+    )
+
+
+def _write_invalid_extraction_debug(failures: list[dict[str, Any]]) -> None:
+    DEBUG_INVALID_SAMPLES_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(DEBUG_INVALID_SAMPLES_PATH, "w", encoding="utf-8") as f:
+        json.dump(failures[:MAX_DEBUG_INVALID_SAMPLES], f, ensure_ascii=False, indent=2)
+    print(
+        f"[Eval] invalid extraction debug samples saved: "
+        f"{min(len(failures), MAX_DEBUG_INVALID_SAMPLES)} -> {DEBUG_INVALID_SAMPLES_PATH}"
+    )
 
 
 def _assert_dataset_sanity(samples: list[dict[str, Any]]) -> tuple[int, int]:
@@ -312,7 +364,10 @@ def load_model_and_tokenizer(
     base_model: str,
     load_in_4bit: bool,
     adapter_path: str | None = None,
-) -> tuple[Any, Any, torch.device]:
+) -> tuple[Any, Any, Any]:
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+
     if not torch.cuda.is_available():
         raise RuntimeError("评测阶段要求 CUDA GPU，禁止 CPU 回退。")
 
@@ -415,6 +470,10 @@ def run_eval_on_prompts(
     enable_rule_based: bool = True,
     enable_taint: bool = False,
 ) -> MetricBundle:
+    import torch
+    from torch.utils.data import DataLoader, TensorDataset
+    from tqdm import tqdm
+
     _assert_dataset_sanity(samples)
     model, tok, device = load_model_and_tokenizer(
         base_model=base_model,
@@ -451,6 +510,7 @@ def run_eval_on_prompts(
     )
 
     evaluated_samples: list[dict[str, Any]] = []
+    invalid_debug_samples: list[dict[str, Any]] = []
     with torch.no_grad():
         for batch_idx, (input_ids, attention_mask, sample_ids) in enumerate(tqdm(loader, desc="eval")):
             t0 = time.perf_counter()
@@ -475,11 +535,22 @@ def run_eval_on_prompts(
                 prompt_len = int(attention_mask[row].sum().item())
                 gen_tokens = out_ids[row, prompt_len:]
                 text = tok.decode(gen_tokens, skip_special_tokens=True)
-                code = extract_python_code(text)
+                cleaned_for_extraction = _truncate_prompt_leakage(text)
+                extraction = extract_python_code_with_debug(cleaned_for_extraction)
+                code = extraction.code
                 sample_id = int(sample_ids[row].item())
                 src = source_samples[sample_id]
 
                 if code is None:
+                    _append_invalid_extraction_debug(
+                        invalid_debug_samples,
+                        src=src,
+                        sample_id=sample_id,
+                        raw_output=text,
+                        candidate=extraction.candidate,
+                        reason=extraction.reason,
+                        source=extraction.source,
+                    )
                     evaluated_samples.append(
                         _invalid_extraction_sample(
                             src=src,
@@ -534,6 +605,7 @@ def run_eval_on_prompts(
         f"[Eval] extraction summary: invalid={n_invalid_preview}/{n_total_preview} "
         f"(rate={preview_rate:.4f}); aggregate_metrics 会在 rate>0.5 时 RuntimeError。"
     )
+    _write_invalid_extraction_debug(invalid_debug_samples)
 
     bundle = aggregate_metrics(evaluated_samples)
     print_eval_summary(bundle)
@@ -590,5 +662,3 @@ def save_results(path: Path, bundle: MetricBundle, meta: dict[str, Any]) -> None
     }
     with open(path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
-
-

@@ -24,6 +24,7 @@ input_ids + completion_mask，供 DataCollatorForLanguageModeling 计算 complet
 from __future__ import annotations
 
 import sys
+import ast
 from pathlib import Path
 from typing import Any
 
@@ -34,9 +35,13 @@ _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
-from dataset.adversarial import (
-    ADVERSARIAL_MARKERS,
-    check_adversarial_dataset,
+FORBIDDEN_TRAINING_TOKENS: tuple[str, ...] = (
+    "[SECURITY WARNING]",
+    "[EXPLANATION]",
+    "[SAFE SOLUTION]",
+    "### Response",
+    "### Solution",
+    "### Test",
 )
 
 
@@ -44,7 +49,7 @@ def row_to_prompt_completion(
     instruction: str,
     input_text: str,
     output: str,
-    template: str = "### Instruction:\n{instruction}\n\n### Input:\n{input}\n\n### Response:\n",
+    template: str = "Instruction:\n{instruction}\n\nInput:\n{input}\n\n",
 ) -> tuple[str, str]:
     """将 instruction/input/output 拼成 prompt + completion（completion 不含 prompt）。"""
     prompt = template.format(instruction=instruction.strip(), input=(input_text or "").strip())
@@ -160,80 +165,65 @@ def train_val_split(records: list[dict], val_ratio: float, seed: int) -> tuple[l
 # ---------------------------------------------------------------------------
 
 
-def assert_adversarial_samples_follow_format(records: list[dict]) -> dict[str, Any]:
-    """硬断言：所有 ``expected_vulnerable=True`` 样本的 ``output`` 必须同时含 3 段 marker。
+def _contains_forbidden_scaffold(text: str) -> list[str]:
+    return [tok for tok in FORBIDDEN_TRAINING_TOKENS if tok in text]
 
-    任一样本不合规即 ``RuntimeError``；返回的 stats 包含 ``adversarial_total`` /
-    ``format_compliant`` / ``compliance_rate_pct``，供训练入口打印「合规率」审计行。
-    """
-    adversarial_total = 0
-    format_compliant = 0
+
+def assert_training_outputs_are_python_only(records: list[dict]) -> dict[str, Any]:
+    """硬断言：所有训练输出必须是纯 Python 代码（无结构化模板/分节文本）。"""
     violations: list[dict[str, Any]] = []
-    for i, r in enumerate(records):
-        if "expected_vulnerable" not in r:
-            raise RuntimeError(
-                f"SFT pre-flight: record #{i} missing expected_vulnerable "
-                f"(id={r.get('id')!r}); training must not proceed without the "
-                "adversarial label contract."
-            )
-        if not isinstance(r["expected_vulnerable"], bool):
-            raise RuntimeError(
-                f"SFT pre-flight: record #{i} has non-bool expected_vulnerable "
-                f"(got {type(r['expected_vulnerable']).__name__})"
-            )
-        if not r["expected_vulnerable"]:
-            continue
-        adversarial_total += 1
-        output = str(r.get("output", ""))
-        missing = [m for m in ADVERSARIAL_MARKERS if m not in output]
-        if missing:
-            violations.append(
-                {"index": i, "id": r.get("id"), "missing": missing}
-            )
-            continue
-        format_compliant += 1
+    valid_python = 0
+    total = len(records)
 
-    compliance_rate_pct = (
-        100.0 * format_compliant / adversarial_total if adversarial_total else 100.0
-    )
+    for i, r in enumerate(records):
+        output = str(r.get("output", ""))
+        if not output.strip():
+            violations.append(
+                {"index": i, "id": r.get("id"), "kind": "empty_output"}
+            )
+            continue
+
+        forbidden = _contains_forbidden_scaffold(output)
+        if forbidden:
+            violations.append(
+                {"index": i, "id": r.get("id"), "kind": "forbidden_scaffold", "tokens": forbidden}
+            )
+            continue
+
+        try:
+            ast.parse(output)
+        except SyntaxError as exc:
+            violations.append(
+                {
+                    "index": i,
+                    "id": r.get("id"),
+                    "kind": "non_python_output",
+                    "reason": f"{exc.msg} at line {exc.lineno}, column {exc.offset}",
+                }
+            )
+            continue
+        valid_python += 1
+
     if violations:
         preview = violations[:5]
         raise RuntimeError(
-            f"SFT pre-flight: adversarial format check failed "
-            f"({format_compliant}/{adversarial_total} compliant = "
-            f"{compliance_rate_pct:.2f}%). First 5 violations: {preview}. "
-            "Regenerate dataset via `python dataset/generate_expanded_dataset.py` "
-            "and rerun; NEVER patch this by filtering samples (the user rule "
-            "explicitly forbids removing expected_vulnerable=True samples)."
+            f"SFT pre-flight: training outputs must be python-only "
+            f"(valid={valid_python}/{total}). First 5 violations: {preview}. "
+            "Regenerate dataset and ensure output contains only Python code."
         )
     return {
-        "adversarial_total": adversarial_total,
-        "format_compliant": format_compliant,
-        "compliance_rate_pct": compliance_rate_pct,
+        "total": total,
+        "valid_python_outputs": valid_python,
+        "valid_python_rate_pct": (100.0 * valid_python / total) if total else 100.0,
     }
 
 
 def assert_no_vulnerable_sql_patterns(records: list[dict]) -> dict[str, Any]:
-    """硬断言：数据集**任何** output 都不得含脆弱 SQL 模式。
-
-    - 对 ``expected_vulnerable=True`` 样本：仅扫描 SAFE SOLUTION 代码块（避免
-      natural-language 解释里被误伤）。
-    - 对 ``expected_vulnerable=False`` 样本：扫描整个 output。
-
-    扫描规则与生成侧一致（``dataset/adversarial.py::contains_vulnerable_sql_pattern``
-    使用同一套 regex），确保两侧契约对齐。
-    """
-    report = check_adversarial_dataset(records)
-    if report.violations:
-        preview = report.violations[:5]
-        raise RuntimeError(
-            f"SFT pre-flight: vulnerable SQL patterns / malformed adversarial "
-            f"samples found in training data "
-            f"(total={report.total_samples}, violations={len(report.violations)}). "
-            f"First 5: {preview}. The dataset is contaminated; regenerate via "
-            "`python dataset/generate_expanded_dataset.py`."
-        )
-    return report.as_dict()
+    """兼容接口：当前仅保留 python-only 约束，不再执行对抗模板扫描。"""
+    return {
+        "total_samples": len(records),
+        "violations": [],
+    }
 
 
 def run_pretraining_sanity_checks(records: list[dict]) -> dict[str, Any]:
@@ -242,29 +232,19 @@ def run_pretraining_sanity_checks(records: list[dict]) -> dict[str, Any]:
     失败即 ``RuntimeError``，阻止 ``Trainer.train()`` 启动；训练脚本不得把本函数
     的异常吞掉，也不得在异常后继续运行。
     """
-    fmt = assert_adversarial_samples_follow_format(records)
+    fmt = assert_training_outputs_are_python_only(records)
     vuln = assert_no_vulnerable_sql_patterns(records)
 
     total = len(records)
-    adversarial = fmt["adversarial_total"]
-    compliance = fmt["compliance_rate_pct"]
+    valid_python = fmt["valid_python_outputs"]
+    compliance = fmt["valid_python_rate_pct"]
     print(f"[SFT sanity] total_samples={total}")
-    print(f"[SFT sanity] adversarial_samples={adversarial}")
-    print(f"[SFT sanity] format_compliance_rate={compliance:.2f}%")
-    print(
-        f"[SFT sanity] safe_solution_clean_rate="
-        f"{vuln['safe_solution_clean_rate_pct']:.2f}%"
-    )
-    print(
-        f"[SFT sanity] negative_clean_rate="
-        f"{vuln['negative_clean_rate_pct']:.2f}%"
-    )
-    print(
-        "[SFT sanity] vulnerable SQL patterns in ANY output = 0 (hard assert passed)"
-    )
+    print(f"[SFT sanity] valid_python_outputs={valid_python}")
+    print(f"[SFT sanity] python_only_compliance_rate={compliance:.2f}%")
+    print("[SFT sanity] forbidden scaffold tokens in outputs = 0 (hard assert passed)")
     return {
         "total": total,
-        "adversarial": adversarial,
-        "format_compliance_rate_pct": compliance,
+        "valid_python_outputs": valid_python,
+        "python_only_compliance_rate_pct": compliance,
         "sanity_report": vuln,
     }

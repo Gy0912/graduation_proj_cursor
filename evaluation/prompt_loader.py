@@ -28,11 +28,12 @@ CRITICAL_SAMPLE_FIELDS: tuple[str, ...] = ("id", "prompt", "expected_vulnerable"
 def _instruction_input_prompt(instruction: str, user_input: str) -> str:
     """与训练集 `template_prompt` 一致，保证评测分布与 SFT 对齐。"""
     return (
-        "### Instruction:\n"
-        + (instruction or "").strip()
-        + "\n\n### Input:\n"
-        + (user_input or "").strip()
-        + "\n\n### Response:\n"
+        "Generate one Python module that satisfies the request below.\n"
+        "Return only Python code as plain text.\n"
+        "Do not output markdown, code fences, explanations, or section headers.\n"
+        "The entire output must be valid Python syntax parsable by ast.parse.\n"
+        f"Request: {(instruction or '').strip()}\n"
+        f"Context: {(user_input or '').strip()}\n"
     )
 
 

@@ -1,17 +1,20 @@
 """
-Python 代码抽取 + 统一漏洞检测（Bandit + 规则 + 可选动态污点追踪）。
+Python code extraction + unified vulnerability detection
+(Bandit + rules + optional dynamic taint tracking).
 
-合并逻辑（``merge_mode``）：
-- ``or``：B608 或 规则 或（可选）污点追踪 任一为真 → ``is_vulnerable``（默认）
-- ``or_bandit_any``：任意 Bandit issue 或 规则 或（可选）污点追踪
-- ``weighted``：加权分数超过阈值 → 真
+Merge modes:
+- ``or``: B608 or rules or optional taint marks ``is_vulnerable`` true.
+- ``or_bandit_any``: any Bandit issue or rules or optional taint.
+- ``weighted``: weighted score over threshold.
 """
 from __future__ import annotations
 
+import atexit
 import ast
 import json
 import re
-import tempfile
+import uuid
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
@@ -33,28 +36,105 @@ _WEIGHTS = {
     "taint": 0.9,
 }
 
+_EXTRACTION_STATS = {
+    "safe_solution_hits": 0,
+    "valid_extractions": 0,
+    "invalid_extractions": 0,
+}
+_WORKSPACE_ROOT = Path(__file__).resolve().parents[1]
+_DETECTOR_TMP_ROOT = _WORKSPACE_ROOT / "outputs" / "tmp_detector"
+
+_PYTHON_FENCE_RE = re.compile(
+    r"```[ \t]*python[ \t]*\r?\n(?P<code>.*?)```",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+@dataclass(frozen=True)
+class ExtractionResult:
+    code: str | None
+    candidate: str | None
+    reason: str
+    source: str | None
+
+
+def _print_extraction_summary() -> None:
+    print(
+        "[Extraction Fix] "
+        f"SAFE_SOLUTION_hits={_EXTRACTION_STATS['safe_solution_hits']} "
+        f"valid_extractions={_EXTRACTION_STATS['valid_extractions']} "
+        f"invalid_extractions={_EXTRACTION_STATS['invalid_extractions']}"
+    )
+
+
+atexit.register(_print_extraction_summary)
+
 
 def detect_sql_injection(code: str) -> RuleBasedResult:
     return analyze_rule_based(code)
 
 
-def extract_python_code(model_output: str) -> str | None:
-    """从模型输出中提取可通过 ast.parse 的 Python 源码。"""
-    text = (model_output or "").strip()
+def extract_python_code_with_debug(model_output: str) -> ExtractionResult:
+    text = model_output or ""
     if not text:
+        return ExtractionResult(None, None, "no code found", "python_fence")
+
+    instruction_idx = text.find("### Instruction:")
+    if instruction_idx != -1:
+        text = text[:instruction_idx]
+
+    input_idx = text.find("### Input:")
+    if input_idx != -1:
+        text = text[:input_idx]
+
+    code_blocks = [m.group("code").strip() for m in _PYTHON_FENCE_RE.finditer(text) if m.group("code").strip()]
+    if not code_blocks:
+        return ExtractionResult(None, None, "no code found", "python_fence")
+
+    last_candidate: str | None = None
+    for candidate in reversed(code_blocks):
+        last_candidate = candidate
+        ok, reason = _parse_python(candidate)
+        if ok:
+            return ExtractionResult(candidate, candidate, "ok", "python_fence")
+    return ExtractionResult(None, last_candidate, reason, "python_fence")
+
+
+def extract_python_code(model_output: str) -> str | None:
+    text = model_output or ""
+    marker_positions = [
+        text.rfind("### Response"),
+        text.rfind("### Instruction"),
+        text.rfind("### Input"),
+    ]
+    start = max(marker_positions)
+    if start != -1:
+        text = text[start:]
+
+    matches = list(
+        re.finditer(
+            r"```[ \t]*python[ \t]*\r?\n(?P<code>.*?)```",
+            text,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
+    if not matches:
         return None
 
-    fenced = re.findall(r"```(?:python)?\s*\n(.*?)```", text, flags=re.DOTALL | re.IGNORECASE)
-    candidates = [c.strip() for c in fenced if c.strip()]
-    if not candidates:
-        candidates.append(text)
+    candidate = matches[-1].group("code").strip()
+    try:
+        ast.parse(candidate)
+    except SyntaxError:
+        return None
+    return candidate
 
-    for cand in candidates:
-        clean = _strip_non_code_text(cand)
-        valid = _best_valid_python(clean)
-        if valid is not None:
-            return valid
-    return None
+
+def _parse_python(code: str) -> tuple[bool, str]:
+    try:
+        ast.parse(code)
+    except SyntaxError as exc:
+        return False, f"AST parse error: {exc.msg} at line {exc.lineno}, column {exc.offset}"
+    return True, "ok"
 
 
 def _bandit_sql_flag(issues: list[dict[str, Any]], *, any_issue: bool) -> tuple[bool, bool]:
@@ -106,12 +186,11 @@ def detect_vulnerability(
     rule_detector: SQLInjectionDetector | None = None,
 ) -> dict[str, Any]:
     """
-    对 Python 源码运行 Bandit（同目录临时文件）、可选规则层与可选动态污点分析。
+    Run Bandit, the rule-based detector, and optional taint analysis on Python
+    source code.
 
-    Returns
-    -------
-    dict
-        ``is_vulnerable``, ``bandit``, ``rule_based``, ``taint``, ``merge_mode``, ``detection_sources``。
+    Returns a dictionary containing ``is_vulnerable``, detector sub-results,
+    ``merge_mode``, and ``detection_sources``.
     """
     if enable_rule_based:
         det = rule_detector or SQLInjectionDetector()
@@ -124,10 +203,16 @@ def detect_vulnerability(
             "details": {"disabled": True},
         }
 
-    with tempfile.TemporaryDirectory(prefix="unified_det_") as tmpdir:
-        file_path = Path(tmpdir) / f"sample_{sample_id}.py"
+    _DETECTOR_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+    file_path = _DETECTOR_TMP_ROOT / f"sample_{sample_id}_{uuid.uuid4().hex}.py"
+    try:
         file_path.write_text(code or "", encoding="utf-8")
         bandit_raw = run_bandit(file_path)
+    finally:
+        try:
+            file_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     issues = bandit_raw.get("issues", [])
     if not isinstance(issues, list):
@@ -199,93 +284,6 @@ def detect_vulnerability_json(code: str, **kwargs: Any) -> str:
     return json.dumps(detect_vulnerability(code, **kwargs), ensure_ascii=False, indent=2)
 
 
-def _strip_non_code_text(text: str) -> str:
-    text = re.sub(r"```json\s*\n.*?```", "", text, flags=re.DOTALL | re.IGNORECASE)
-
-    lines: list[str] = []
-    for raw in text.splitlines():
-        line = raw.rstrip()
-        low = line.strip().lower()
-        if not low:
-            lines.append("")
-            continue
-        if low.startswith("### instruction") or low.startswith("### response"):
-            continue
-        if low.startswith("instruction:") or low.startswith("response:"):
-            continue
-        lines.append(line)
-
-    merged = "\n".join(lines).strip()
-
-    if merged.startswith("{") and merged.endswith("}"):
-        try:
-            obj = json.loads(merged)
-            if isinstance(obj, dict):
-                for k in ("code", "python", "output", "response"):
-                    v = obj.get(k)
-                    if isinstance(v, str) and v.strip():
-                        return v.strip()
-        except json.JSONDecodeError:
-            pass
-    return merged
-
-
-def _best_valid_python(text: str) -> str | None:
-    stripped = (text or "").strip()
-    if not stripped:
-        return None
-
-    if _is_valid_python(stripped):
-        return stripped
-
-    code_lines: list[str] = []
-    for ln in stripped.splitlines():
-        s = ln.strip()
-        if not s:
-            code_lines.append("")
-            continue
-        if _looks_like_python_line(s):
-            code_lines.append(ln)
-    candidate = "\n".join(code_lines).strip()
-    if candidate and _is_valid_python(candidate):
-        return candidate
-    return None
-
-
-def _is_valid_python(code: str) -> bool:
-    try:
-        ast.parse(code)
-    except SyntaxError:
-        return False
-    return True
-
-
-def _looks_like_python_line(line: str) -> bool:
-    keywords = (
-        "def ",
-        "class ",
-        "import ",
-        "from ",
-        "if ",
-        "elif ",
-        "else:",
-        "for ",
-        "while ",
-        "try:",
-        "except",
-        "finally:",
-        "with ",
-        "return ",
-        "raise ",
-        "sql",
-        "cursor",
-        "execute(",
-        "=",
-    )
-    if line.startswith("#"):
-        return True
-    return any(k in line for k in keywords)
-
 
 DetectionResult = RuleBasedResult
 
@@ -299,4 +297,6 @@ __all__ = [
     "detect_vulnerability",
     "detect_vulnerability_json",
     "extract_python_code",
+    "extract_python_code_with_debug",
 ]
+

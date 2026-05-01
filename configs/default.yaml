@@ -43,7 +43,7 @@ files:
 
 generation:
   max_new_tokens: 256
-  temperature: 0.2
+  temperature: 0
   top_p: 0.9
 
 eval:
