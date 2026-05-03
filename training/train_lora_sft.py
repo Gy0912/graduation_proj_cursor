@@ -84,9 +84,8 @@ def main() -> None:
         )
     records = load_sql_security_json(data_path)
 
-    # --- Adversarial pre-flight：禁止脆弱 SQL 流入 SFT target ---
-    # 要求训练集中 expected_vulnerable=True 样本的 output 已经被替换为三段式
-    # 对抗响应；任何一条含有 SQL 注入模式的 output 都必须在训练启动前被拒绝。
+    # --- SFT pre-flight：三段式 JSON → code-only completion（SAFE SOLUTION）+ ast.parse；
+    # 再断言规范化后的 output 为纯 Python。详见 training/sft_preprocess.py。
     run_pretraining_sanity_checks(records)
 
     ds_cfg = cfg.get("dataset", {})

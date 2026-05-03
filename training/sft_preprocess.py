@@ -2,34 +2,35 @@
 SFT 数据预处理：在训练循环外完成分词（dataset.map batched=True），产出 TRL 期望的
 input_ids + completion_mask，供 DataCollatorForLanguageModeling 计算 completion-only loss。
 
-对抗训练契约（2026-04-22 起强制生效）：
-  * **不过滤任何样本**。``expected_vulnerable=True`` 的样本也必须作为 SFT target
-    进入训练集——它们的 ``output`` 不再是脆弱 SQL，而是由
-    ``dataset/adversarial.py::build_secure_response`` 合成的三段式安全响应
-    （``[SECURITY WARNING]`` / ``[EXPLANATION]`` / ``[SAFE SOLUTION]``）。
-  * 调用 ``build_sft_dataset_from_records(...)`` 之前，训练入口脚本（
-    ``training/train_lora_sft.py`` / ``training/train_qlora_sft.py``）必须调用
-    ``run_pretraining_sanity_checks(records)``，该函数跑两条硬断言：
+对抗数据在 **JSON 磁盘形态** 上仍可为三段式
+（``[SECURITY WARNING]`` / ``[EXPLANATION]`` / ``[SAFE SOLUTION]`` + fenced Python），
+但在进入 ``Trainer`` 之前，``run_pretraining_sanity_checks`` 会先做 **code-only 规范化**：
 
-      1. 任何样本的 ``output`` 里不得出现脆弱 SQL 模式（对 ``expected_vulnerable
-         =True`` 样本只扫描 SAFE SOLUTION 代码块，避免 natural-language 解释
-         里引用的 SQL 关键词误伤；对 ``expected_vulnerable=False`` 样本扫描整
-         个 ``output``）；
-      2. 所有 ``expected_vulnerable=True`` 样本的 ``output`` 必须同时包含
-         3 段 marker；合规率 < 100% 即 FAIL FAST。
+  * 从每条 ``output`` 中仅抽取 ``[SAFE SOLUTION]`` 内的 Python（
+    ``dataset/adversarial.py::extract_code_only_completion``），去掉 markdown fence、
+    去掉 warning/explanation 段；对明显「整段重复两遍」的 completion 做折叠；
+  * 对抽取结果 ``ast.parse``，无法解析的样本 **丢弃** 并追加写入
+    ``logs/sft_code_only_dropout.log``；
+  * 规范化后再执行 ``assert_training_outputs_are_python_only``（completion 中不得再
+    含三段式 marker 等脚手架）。
 
-    任一断言失败，脚本会 ``raise RuntimeError`` 阻止训练继续——这是为了保证
-    模型**永远不会**从我们的训练目标里学到 SQL 注入模式。
+这样 SFT 的监督目标与评测侧 **从 raw 输出中抽取再跑 Bandit/规则** 的对象一致（都是
+可执行 Python 语义），同时评测仍可单独对完整 ``raw_output`` 做三段式响应质量统计
+（评测代码未改，契约在数据与训练侧对齐）。
 """
 from __future__ import annotations
 
-import sys
 import ast
+import json
+import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from datasets import Dataset
 from transformers import PreTrainedTokenizerBase
+
+from dataset.adversarial import extract_code_only_completion
 
 _ROOT = Path(__file__).resolve().parents[1]
 if str(_ROOT) not in sys.path:
@@ -43,6 +44,53 @@ FORBIDDEN_TRAINING_TOKENS: tuple[str, ...] = (
     "### Solution",
     "### Test",
 )
+
+def normalize_sft_records_for_training(records: list[dict[str, Any]]) -> dict[str, Any]:
+    """
+    原地将每条记录的 ``output`` 替换为 code-only completion；无法抽取或 ``ast.parse``
+    失败的样本从列表中移除并记录日志。
+    """
+    log_path = _ROOT / "logs" / "sft_code_only_dropout.log"
+    dropped: list[dict[str, Any]] = []
+    kept: list[dict[str, Any]] = []
+
+    for idx, r in enumerate(records):
+        raw = str(r.get("output", ""))
+        code = extract_code_only_completion(raw)
+        if not code:
+            dropped.append({"index": idx, "id": r.get("id"), "reason": "extract_failed_or_empty"})
+            continue
+        try:
+            ast.parse(code)
+        except SyntaxError as exc:
+            dropped.append(
+                {
+                    "index": idx,
+                    "id": r.get("id"),
+                    "reason": f"syntax_error:{exc.msg}:line{exc.lineno}",
+                }
+            )
+            continue
+        nr = dict(r)
+        nr["output"] = code.rstrip() + "\n"
+        kept.append(nr)
+
+    if dropped:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now(timezone.utc).isoformat()
+        with log_path.open("a", encoding="utf-8") as f:
+            f.write(f"\n### UTC {stamp} dropped={len(dropped)} kept={len(kept)}\n")
+            for row in dropped[:2000]:
+                f.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+    records.clear()
+    records.extend(kept)
+
+    return {
+        "kept": len(kept),
+        "dropped": len(dropped),
+        "drop_log_path": str(log_path) if dropped else None,
+    }
 
 
 def row_to_prompt_completion(
@@ -227,11 +275,24 @@ def assert_no_vulnerable_sql_patterns(records: list[dict]) -> dict[str, Any]:
 
 
 def run_pretraining_sanity_checks(records: list[dict]) -> dict[str, Any]:
-    """SFT 训练入口调用的「唯一对外」pre-flight 函数，组合两条硬断言 + 打印审计日志。
+    """SFT 训练入口调用的「唯一对外」pre-flight 函数：先 code-only 规范化，再硬断言。
 
     失败即 ``RuntimeError``，阻止 ``Trainer.train()`` 启动；训练脚本不得把本函数
     的异常吞掉，也不得在异常后继续运行。
     """
+    norm = normalize_sft_records_for_training(records)
+    print(
+        f"[SFT normalize] kept={norm['kept']} dropped={norm['dropped']} "
+        f"(code-only SAFE SOLUTION / ast.parse)"
+    )
+    if norm["drop_log_path"]:
+        print(f"[SFT normalize] dropout log: {norm['drop_log_path']}")
+    if not records:
+        raise RuntimeError(
+            "SFT pre-flight: 全部样本在 code-only 规范化中被丢弃（无法抽取 SAFE SOLUTION "
+            "或 ast.parse 失败）。请检查数据集与 logs/sft_code_only_dropout.log。"
+        )
+
     fmt = assert_training_outputs_are_python_only(records)
     vuln = assert_no_vulnerable_sql_patterns(records)
 
@@ -247,4 +308,7 @@ def run_pretraining_sanity_checks(records: list[dict]) -> dict[str, Any]:
         "valid_python_outputs": valid_python,
         "python_only_compliance_rate_pct": compliance,
         "sanity_report": vuln,
+        "normalize_kept": norm["kept"],
+        "normalize_dropped": norm["dropped"],
+        "normalize_drop_log": norm["drop_log_path"],
     }

@@ -5,17 +5,27 @@
   instruction, input, output,
   attack_type, difficulty, task_type,
   expected_vulnerable (bool，用于评测侧 FPR/FNR 等)
+  schema_table, schema_column（表/列，与 input 中 schema 描述一致；供 DPO 核对）
 
 分布（非均匀）：
   difficulty — 训练：easy 20% / medium 40% / hard 40%；评测：easy 更低、hard 更高
   task — generation 50% / fix 50%
   attack — 强调 fake_sanitization、orm_misuse、indirect_injection；弱化 string_concat
 标签：
-  expected_vulnerable 与 expected_safe 通过队列强制约各 50%（TARGET_EXPECTED_VULNERABLE_FRACTION=0.5）
+  ``expected_vulnerable`` 仅作**元数据**（评测 FPR/FNR 等），由队列约各 50%；**不参与**
+  ``output`` 生成——训练/评测行的 ``output`` 一律为安全 Python。
 
-训练输出契约（code-only）：
-  * 训练样本 ``output`` 必须是纯 Python 代码（不含 marker/分节模板/markdown 代码围栏）。
-  * ``build_dpo_pairs`` 的 ``chosen`` 也使用纯 Python 代码，以保持 SFT/DPO 目标一致。
+训练输出契约（code-only / SFT safety）：
+  * 磁盘上 ``train_expanded.json`` / ``eval`` 行的 ``output`` **始终**为通过
+    ``ast.parse`` 且不含 ``contains_vulnerable_sql_pattern`` 命中项的安全实现；
+    无法通过校验的候选在生成循环中**丢弃重试**。
+  * SFT 训练入口仍可做 code-only 规范化（见 ``training/sft_preprocess.py``）。
+  * ``build_dpo_pairs`` 写入 ``data/dpo_pairs.json`` 时：``chosen`` / ``rejected`` 均经
+    ``dataset/adversarial.py::extract_code_only_completion`` 规范化，并各自
+    ``ast.parse`` 校验通过后才落盘；``rejected`` 为在**同一条训练样本**的
+    ``instruction``/``input``/``schema`` 下对 ``chosen`` 做**同构脆弱化**改写
+   （非随机另起炉灶），使 DPO 偏好为「同一任务：安全实现 > 脆弱变体」。
+  * 评测导出行 ``prompt`` 与 SFT/DPO 共用 ``training_prompt``（无旧版分段式输出契约文案）。
 
 运行示例：
   python dataset/generate_expanded_dataset.py --num_samples 2500
@@ -24,10 +34,12 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import hashlib
 import json
 import logging
 import random
+import re
 import sys
 from collections import deque
 from datetime import datetime, timezone
@@ -37,6 +49,10 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from dataset.adversarial import (
+    contains_vulnerable_sql_pattern,
+    extract_code_only_completion,
+)
 from dataset.research_schema import stable_sample_id, write_research_splits
 
 
@@ -129,24 +145,6 @@ COLS = (
     "created_at",
     "user_id",
 )
-
-
-def template_prompt(instruction: str, input_text: str) -> str:
-    contract = (
-        "Output contract: respond with [SECURITY WARNING], [EXPLANATION], and "
-        "[SAFE SOLUTION]. [SAFE SOLUTION] must contain the only code, fenced as "
-        "```python. [EXPLANATION] must be prose only: no executable-like code, "
-        "no function calls, and no assignment syntax.\n"
-    )
-    return (
-        "### Instruction:\n"
-        + instruction.strip()
-        + "\n\n"
-        + contract
-        + "\n\n### Input:\n"
-        + (input_text or "").strip()
-        + "\n\n### Response:\n"
-    )
 
 
 def training_prompt(instruction: str, input_text: str) -> str:
@@ -300,152 +298,6 @@ def fetch_rows(conn: pymysql.connections.Connection, value: str):
         cur.execute(sql, (value,))
         return cur.fetchall()
 '''
-
-
-# --- 细微不安全「参考答案」（打破全安全标签；Bandit/规则仍可能命中） ---
-
-
-def _subtle_misbound_execute(table: str, col: str, rng: random.Random) -> str:
-    salt = rng.randint(0, 10**9)
-    return f'''import pymysql
-
-
-def fetch_rows(conn, value: str):
-    sql = "SELECT * FROM {table} WHERE {col} = %s"
-    # BUG: 漏写元组，部分驱动下行为不确定 / 易被误判为安全
-    cur = conn.cursor()
-    cur.execute(sql, value)
-    return cur.fetchall()
-# ambiguous_ref={salt}
-'''
-
-
-def _subtle_partial_sanitization_concat(table: str, col: str, rng: random.Random) -> str:
-    salt = rng.randint(0, 10**9)
-    return f'''import pymysql
-
-
-def fetch_rows(cur, raw: str):
-    cleaned = raw.replace("'", "")  # 仍可通过编码或其它字符绕过
-    q = "SELECT * FROM {table} WHERE {col} = '" + cleaned + "'"
-    cur.execute(q)
-    return cur.fetchall()
-# ambiguous_ref={salt}
-'''
-
-
-def _subtle_wrong_arity_params(table: str, col: str, rng: random.Random) -> str:
-    salt = rng.randint(0, 10**9)
-    return f'''import pymysql
-
-
-def fetch_rows(cur, a: str, b: str):
-    sql = "SELECT * FROM {table} WHERE {col} = %s AND status = %s"
-    cur.execute(sql, (a,))  # 占位符数量不匹配
-    return cur.fetchall()
-# ambiguous_ref={salt}
-'''
-
-
-def _subtle_mixed_comment_lie(table: str, col: str, rng: random.Random) -> str:
-    salt = rng.randint(0, 10**9)
-    return f'''import pymysql
-
-
-def fetch_rows(cur, uid: str):
-    # 声称已参数化，实际仍拼接
-    sql = "SELECT * FROM {table} WHERE {col} = '" + uid + "'"  # parameterized (WRONG)
-    cur.execute(sql)
-    return cur.fetchall()
-# ambiguous_ref={salt}
-'''
-
-
-def _subtle_orm_string_build(table: str, col: str, rng: random.Random) -> str:
-    salt = rng.randint(0, 10**9)
-    return f'''from sqlalchemy import text
-
-
-def fetch_rows(session, name: str):
-    # 看起来像 bind，实为字符串拼接
-    stmt = text("SELECT * FROM {table} WHERE {col} = '" + name + "'")
-    return session.execute(stmt).fetchall()
-# ambiguous_ref={salt}
-'''
-
-
-def _subtle_percent_format_sql_string(table: str, col: str, rng: random.Random) -> str:
-    """伪参数化：对 SQL 字面量做 % 格式化后再 execute（非绑定）。"""
-    salt = rng.randint(0, 10**9)
-    return f'''import pymysql
-
-
-def fetch_rows(cur, user_input: str):
-    # 看起来像占位符，实为 Python 字符串 % 插值
-    sql = "SELECT * FROM {table} WHERE {col} = '%s'" % user_input
-    cur.execute(sql)
-    return cur.fetchall()
-# ambiguous_ref={salt}
-'''
-
-
-def _subtle_mixed_safe_then_concat(table: str, col: str, rng: random.Random) -> str:
-    """一段 %s 绑定 + 拼接另一谓词（混合安全/不安全）。"""
-    salt = rng.randint(0, 10**9)
-    return f'''import pymysql
-
-
-def fetch_rows(cur, id_val: str, name: str):
-    sql = "SELECT * FROM {table} WHERE {col} = %s"
-    sql += " AND name = '" + name + "'"
-    cur.execute(sql, (id_val,))
-    return cur.fetchall()
-# ambiguous_ref={salt}
-'''
-
-
-def _subtle_indirect_still_concat(table: str, col: str, rng: random.Random) -> str:
-    salt = rng.randint(0, 10**9)
-    return f'''import pymysql
-
-
-def _piece(v: str) -> str:
-    return "'" + v + "'"
-
-def fetch_rows(cur, token: str):
-    sql = "SELECT * FROM {table} WHERE {col} = " + _piece(token)
-    cur.execute(sql)
-    return cur.fetchall()
-# ambiguous_ref={salt}
-'''
-
-
-def _pick_subtle_output(attack: str, table: str, col: str, rng: random.Random) -> str:
-    pool = [
-        _subtle_misbound_execute,
-        _subtle_partial_sanitization_concat,
-        _subtle_wrong_arity_params,
-        _subtle_mixed_comment_lie,
-        _subtle_orm_string_build,
-        _subtle_indirect_still_concat,
-        _subtle_percent_format_sql_string,
-        _subtle_mixed_safe_then_concat,
-    ]
-    if attack == "orm_misuse":
-        return _subtle_orm_string_build(table, col, rng)
-    if attack == "indirect_injection":
-        return _subtle_indirect_still_concat(table, col, rng)
-    if attack == "fake_sanitization":
-        return _subtle_partial_sanitization_concat(table, col, rng)
-    if attack == "parameterized_query":
-        return (
-            _subtle_percent_format_sql_string(table, col, rng)
-            if rng.random() < 0.55
-            else _subtle_mixed_safe_then_concat(table, col, rng)
-        )
-    if attack in ("fstring", "format_string") and rng.random() < 0.35:
-        return _subtle_percent_format_sql_string(table, col, rng)
-    return rng.choice(pool)(table, col, rng)
 
 
 def _hard_safe_reference(attack: str, table: str, col: str, rng: random.Random) -> str:
@@ -769,6 +621,293 @@ def _decorate_hard_output(difficulty: str, code: str, rng: random.Random) -> str
     return prefix + code
 
 
+def _make_safe_sft_output(
+    attack: str, difficulty: str, table: str, col: str, rng: random.Random
+) -> str:
+    """SFT / 评测参考答案：仅安全实现（与 ``expected_vulnerable`` 元数据无关）。"""
+    base = (
+        _hard_safe_reference(attack, table, col, rng)
+        if difficulty == "hard"
+        else _safe_for_attack(attack, table, col, rng)
+    )
+    return _decorate_hard_output(difficulty, base, rng)
+
+
+def _output_valid_for_sft(output: str) -> bool:
+    """``ast.parse`` 通过且不含已知 SQLi 代码模式则接受。"""
+    t = (output or "").strip()
+    if not t:
+        return False
+    try:
+        ast.parse(t)
+    except SyntaxError:
+        return False
+    vuln, _ = contains_vulnerable_sql_pattern(t)
+    return not vuln
+
+
+def _infer_schema_from_row(row: dict) -> tuple[str, str]:
+    """从显式字段或 ``input`` 中解析 table/column，供 DPO rejected 与 chosen 对齐。"""
+    st, sc = row.get("schema_table"), row.get("schema_column")
+    if isinstance(st, str) and isinstance(sc, str) and st.strip() and sc.strip():
+        return st.strip(), sc.strip()
+    inp = str(row.get("input", "") or "")
+    m = re.search(r"DB table `([^`]+)`, column `([^`]+)`", inp)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.search(r"Schema `([^`]+)\.([^`]+)`", inp)
+    if m:
+        return m.group(1), m.group(2)
+    m = re.search(r"SELECT\s+\*\s+FROM\s+(\w+)\s+WHERE\s+(\w+)\s*=", inp, re.IGNORECASE)
+    if m:
+        return m.group(1), m.group(2)
+    raise ValueError(
+        "build_dpo_pairs: 无法推断 schema_table/schema_column（请确保样本含 "
+        "schema_table/schema_column 或可解析的 input）。"
+    )
+
+
+def _extract_execute_param_pymysql(code: str) -> str | None:
+    """从 ``cur.execute(sql, (...))`` 提取单参数名（pymysql/sqlite 安全模板）。"""
+    m = re.search(r"cur\.execute\(\s*sql\s*,\s*\(\s*(\w+)\s*,?\s*\)\s*\)", code)
+    return m.group(1) if m else None
+
+
+def _try_variant_sqlalchemy(code: str, attack: str, rng: random.Random) -> str | None:
+    """将 ``stmt`` + ``session.execute(stmt, {{...}})`` 改为 ``text(...)`` 内拼接，命中 ``execute_plus_concat``。"""
+    if "session.execute" not in code or "text(" not in code or "stmt" not in code:
+        return None
+    stmt_m = re.search(
+        r'stmt\s*=\s*text\("(SELECT \* FROM \w+ WHERE \w+ = ):(\w+)"\)\s*\n\s*return\s+session\.execute\(\s*stmt\s*,\s*(\{[^}]+\})\s*\)\.fetchall\(\)',
+        code,
+        re.DOTALL,
+    )
+    if not stmt_m:
+        return None
+    prefix = stmt_m.group(1)
+    dm = re.search(r":\s*(\w+)\s*\}", stmt_m.group(3))
+    py_var = dm.group(1) if dm else "value"
+
+    if attack == "fstring":
+        # 与 ``fstring_sql`` 规则对齐：``execute`` 后直接 ``f"``（不经 ``text(`` 包裹）
+        new_ret = (
+            "    return session.execute(f\""
+            + prefix
+            + "'{"
+            + py_var
+            + "}'\").fetchall()"
+        )
+    elif attack == "format_string":
+        esc = prefix.replace("{", "{{").replace("}", "}}")
+        new_ret = (
+            "    return session.execute(text(\""
+            + esc
+            + "'\" + \"{}\".format("
+            + py_var
+            + ") + \"'\")).fetchall()"
+        )
+    elif attack == "fake_sanitization":
+        new_ret = (
+            "    return session.execute(text(\""
+            + prefix
+            + "'\" + "
+            + py_var
+            + ".replace(\"'\", \"\") + \"'\")).fetchall()"
+        )
+    elif attack == "parameterized_query":
+        new_ret = (
+            "    return session.execute(text(\""
+            + prefix
+            + "'\" + "
+            + py_var
+            + " + \"'\")).fetchall()"
+        )
+    else:
+        new_ret = (
+            "    return session.execute(text(\""
+            + prefix
+            + "'\" + "
+            + py_var
+            + " + \"'\")).fetchall()"
+        )
+
+    return code.replace(stmt_m.group(0), new_ret)
+
+
+def _try_variant_sqlite_pymysql_percent(code: str, attack: str, rng: random.Random) -> str | None:
+    """去掉 ``sql =`` 行，改为 ``cur.execute(\"SELECT...\" + ...)``，命中 ``execute_plus_concat`` / ``fstring_sql`` 等。"""
+    if "%s" not in code and "?" not in code:
+        return None
+    if "cur.execute" not in code:
+        return None
+    param = _extract_execute_param_pymysql(code)
+    if not param:
+        return None
+    sql_m = re.search(r'\s*sql\s*=\s*"(SELECT \* FROM \w+ WHERE \w+ = )(%s|\?)("\s*\n)', code)
+    if not sql_m:
+        return None
+    head = sql_m.group(1)
+    exec_m = re.search(
+        rf"^(\s*)cur\.execute\(\s*sql\s*,\s*\(\s*{re.escape(param)}\s*,?\s*\)\s*\)\s*$",
+        code,
+        re.MULTILINE,
+    )
+    if not exec_m:
+        return None
+    indent = exec_m.group(1)
+    exec_old = exec_m.group(0)
+
+    if attack == "fstring":
+        new_exec = (
+            indent
+            + "cur.execute(f\""
+            + head
+            + "'{"
+            + param
+            + "}'\")"
+        )
+    elif attack == "format_string":
+        esc = head.replace("{", "{{").replace("}", "}}")
+        new_exec = (
+            indent
+            + "cur.execute(\""
+            + esc
+            + "'\" + \"{}\".format("
+            + param
+            + ") + \"'\")"
+        )
+    elif attack == "fake_sanitization":
+        new_exec = (
+            indent
+            + "cur.execute(\""
+            + head
+            + "'\" + "
+            + param
+            + ".replace(\"'\", \"\") + \"'\")"
+        )
+    elif attack == "parameterized_query":
+        new_exec = (
+            indent
+            + "cur.execute(\""
+            + head
+            + "'\" + "
+            + param
+            + " + \"'\")"
+        )
+    else:
+        new_exec = (
+            indent
+            + "cur.execute(\""
+            + head
+            + "'\" + "
+            + param
+            + " + \"'\")"
+        )
+
+    out = code.replace(sql_m.group(0), "\n", 1).replace(exec_old, new_exec, 1)
+    out = re.sub(r"\n\n\n+", "\n\n", out)
+    return out
+
+
+def _try_variant_indirect_full_query(code: str, attack: str, rng: random.Random) -> str | None:
+    if "def _full_query" not in code:
+        return None
+    mret = re.search(r'return\s+"(SELECT \* FROM \w+ WHERE \w+ = )%s"', code)
+    if not mret:
+        return None
+    prefix_sql = mret.group(1)
+    em = re.search(
+        r"^(\s*)cur\.execute\(\s*sql\s*,\s*\(\s*(\w+)\s*,?\s*\)\s*\)\s*$",
+        code,
+        re.MULTILINE,
+    )
+    if not em:
+        return None
+    ind = em.group(1)
+    param = em.group(2)
+    old_ex = em.group(0)
+
+    if attack == "fstring":
+        new_ex = ind + "cur.execute(f\"" + prefix_sql + "'{" + param + "}'\")"
+    elif attack == "format_string":
+        esc = prefix_sql.replace("{", "{{").replace("}", "}}")
+        new_ex = (
+            ind
+            + "cur.execute(\""
+            + esc
+            + "'\" + \"{}\".format("
+            + param
+            + ") + \"'\")"
+        )
+    elif attack == "fake_sanitization":
+        new_ex = (
+            ind
+            + "cur.execute(\""
+            + prefix_sql
+            + "'\" + "
+            + param
+            + ".replace(\"'\", \"\") + \"'\")"
+        )
+    else:
+        new_ex = ind + "cur.execute(\"" + prefix_sql + "'\" + " + param + " + \"'\")"
+
+    code2 = re.sub(
+        r"def _full_query\(\)\s*->\s*str:\s*\n\s*return\s*\"SELECT \* FROM \w+ WHERE \w+ = %s\"\s*\n\s*\n",
+        "",
+        code,
+        count=1,
+    )
+    code2 = re.sub(r"\s*sql\s*=\s*_full_query\(\)\s*\n", "\n", code2, count=1)
+    code2 = code2.replace(old_ex, new_ex)
+    return re.sub(r"\n\n\n+", "\n\n", code2)
+
+
+def _vulnerable_variant_from_chosen(
+    chosen_body: str,
+    attack: str,
+    _difficulty: str,
+    rng: random.Random,
+) -> str:
+    """将安全 ``chosen`` 改写为同一任务语境下的脆弱实现（结构尽量同构）。"""
+    if contains_vulnerable_sql_pattern(chosen_body)[0]:
+        raise ValueError("build_dpo_pairs: chosen 不应命中脆弱 SQL 模式")
+
+    candidates: list[str] = []
+    if attack == "fstring":
+        order = ["sqlalchemy", "sqlite_pymysql", "indirect"]
+    elif attack == "format_string":
+        order = ["sqlalchemy", "sqlite_pymysql", "indirect"]
+    elif attack == "parameterized_query":
+        order = ["sqlite_pymysql", "sqlalchemy", "indirect"]
+    else:
+        order = ["sqlalchemy", "sqlite_pymysql", "indirect"]
+
+    for kind in order:
+        cand: str | None = None
+        if kind == "sqlalchemy":
+            cand = _try_variant_sqlalchemy(chosen_body, attack, rng)
+        elif kind == "sqlite_pymysql":
+            cand = _try_variant_sqlite_pymysql_percent(chosen_body, attack, rng)
+        else:
+            cand = _try_variant_indirect_full_query(chosen_body, attack, rng)
+        if cand:
+            candidates.append(cand)
+
+    rng.shuffle(candidates)
+    for cand in candidates:
+        try:
+            ast.parse(cand)
+        except SyntaxError:
+            continue
+        if contains_vulnerable_sql_pattern(cand)[0]:
+            return cand
+
+    raise ValueError(
+        f"build_dpo_pairs: 无法从 chosen 生成脆弱变体（attack={attack!r}, "
+        f"difficulty={_difficulty!r}）。"
+    )
+
+
 def _instruction_generation(
     attack: str, difficulty: str, rng: random.Random, eval_only: bool = False
 ) -> str:
@@ -830,7 +969,7 @@ def build_one_sample(
     task: str,
     rng: random.Random,
     used: set[str],
-    ambiguous: bool,
+    expected_vulnerable: bool,
     eval_only: bool = False,
     max_attempts: int = 120,
 ) -> dict | None:
@@ -840,17 +979,6 @@ def build_one_sample(
             vuln = _dispatch_vulnerable(attack, table, col, difficulty, rng)
             instruction = _instruction_fix(attack, difficulty, rng, eval_only=eval_only)
             input_text = _input_fix(vuln)
-            if ambiguous:
-                output = _pick_subtle_output(attack, table, col, rng)
-                expected_vulnerable = True
-            else:
-                output = (
-                    _hard_safe_reference(attack, table, col, rng)
-                    if difficulty == "hard"
-                    else _safe_for_attack(attack, table, col, rng)
-                )
-                output = _decorate_hard_output(difficulty, output, rng)
-                expected_vulnerable = False
         else:
             instruction = _instruction_generation(attack, difficulty, rng, eval_only=eval_only)
             input_text = (
@@ -858,18 +986,9 @@ def build_one_sample(
                 if eval_only
                 else _input_generation(attack, table, col, rng)
             )
-            if ambiguous:
-                output = _pick_subtle_output(attack, table, col, rng)
-                expected_vulnerable = True
-            else:
-                output = (
-                    _hard_safe_reference(attack, table, col, rng)
-                    if difficulty == "hard"
-                    else _safe_for_attack(attack, table, col, rng)
-                )
-                output = _decorate_hard_output(difficulty, output, rng)
-                expected_vulnerable = False
-
+        output = _make_safe_sft_output(attack, difficulty, table, col, rng)
+        if not _output_valid_for_sft(output):
+            continue
         k = prompt_hash(instruction, input_text)
         if k in used:
             continue
@@ -882,6 +1001,8 @@ def build_one_sample(
             "difficulty": difficulty,
             "task_type": task,
             "expected_vulnerable": expected_vulnerable,
+            "schema_table": table,
+            "schema_column": col,
         }
     return None
 
@@ -911,7 +1032,7 @@ def to_eval_prompt_row(row: dict) -> dict:
             f"to_eval_prompt_row: expected_vulnerable 必须是 bool，实际为 "
             f"{type(row['expected_vulnerable']).__name__}: {row['expected_vulnerable']!r}"
         )
-    p = template_prompt(row["instruction"], row.get("input", ""))
+    p = training_prompt(row["instruction"], row.get("input", ""))
     out = {
         "id": stable_sample_id(row),
         "prompt": p,
@@ -945,29 +1066,56 @@ def build_dpo_pairs(train_rows: list[dict], rng: random.Random) -> list[dict]:
             )
         instr, inp, out = r["instruction"], r.get("input", ""), r["output"]
         prompt = training_prompt(str(instr), str(inp or ""))
-        table, col = _pick_table_col(rng)
+        schema_table, schema_column = _infer_schema_from_row(r)
         atk = str(r.get("attack_type", "string_concat"))
         diff = str(r.get("difficulty", "easy"))
-        if r["expected_vulnerable"]:
-            # 对抗训练下，training row 的 output 已经是 3 段式安全响应；这条响应
-            # 本身就是我们希望模型学习的输出，因此 DPO 偏好里它同时也是 chosen。
-            # rejected 是一条现场合成的脆弱 SQL，代表我们要把模型从这种行为里拉远。
-            chosen = str(out).strip()
-            rejected = _dispatch_vulnerable(atk, table, col, diff, rng)
-        else:
-            chosen = str(out).strip()
-            rejected = _dispatch_vulnerable(atk, table, col, diff, rng)
-        if chosen and not chosen.endswith("\n"):
-            chosen += "\n"
+        chosen_src = str(out).strip()
+        chosen_body = extract_code_only_completion(chosen_src)
+        if not chosen_body:
+            raise ValueError(
+                "build_dpo_pairs: chosen code-only extraction failed "
+                f"(attack_type={atk!r}, expected_vulnerable={r['expected_vulnerable']!r}, "
+                f"output_prefix={chosen_src[:200]!r})"
+            )
+        try:
+            ast.parse(chosen_body)
+        except SyntaxError as exc:
+            raise ValueError(
+                f"build_dpo_pairs: chosen is not valid Python: {exc}"
+            ) from exc
+        if contains_vulnerable_sql_pattern(chosen_body)[0]:
+            raise ValueError(
+                "build_dpo_pairs: chosen 命中脆弱 SQL 模式（SFT 输出应始终安全）"
+            )
+
+        rejected_raw = _vulnerable_variant_from_chosen(chosen_body, atk, diff, rng)
+        rejected_body = extract_code_only_completion(rejected_raw)
+        if rejected_body is None:
+            rejected_body = rejected_raw.strip()
+        try:
+            ast.parse(rejected_body)
+        except SyntaxError as exc:
+            raise ValueError(
+                f"build_dpo_pairs: rejected is not valid Python: {exc}"
+            ) from exc
+        if not contains_vulnerable_sql_pattern(rejected_body)[0]:
+            raise ValueError(
+                "build_dpo_pairs: rejected 未命中脆弱 SQL 模式（DPO 负例须可检出为不安全）"
+            )
+
+        chosen = chosen_body.rstrip() + "\n"
+        rejected = rejected_body.rstrip() + "\n"
         dpo.append(
             {
                 "prompt": prompt,
                 "chosen": chosen,
-                "rejected": rejected.strip() + "\n",
+                "rejected": rejected,
                 "attack_type": r.get("attack_type"),
                 "difficulty": r.get("difficulty"),
                 "task_type": r.get("task_type"),
                 "expected_vulnerable": r["expected_vulnerable"],
+                "schema_table": schema_table,
+                "schema_column": schema_column,
             }
         )
     rng.shuffle(dpo)
@@ -984,7 +1132,7 @@ def _fill_bucket_list(
 ) -> list[list[dict]]:
     per_bucket_rows: list[list[dict]] = [[] for _ in specs]
 
-    def _peek_ambiguous() -> bool:
+    def _peek_expected_vulnerable() -> bool:
         if label_queue:
             return label_queue[0]
         return rng.random() < TARGET_EXPECTED_VULNERABLE_FRACTION
@@ -999,14 +1147,14 @@ def _fill_bucket_list(
         attempts = 0
         while bucket_used < need and attempts < need * 250:
             attempts += 1
-            amb = _peek_ambiguous()
+            ev = _peek_expected_vulnerable()
             s = build_one_sample(
                 attack,
                 difficulty,
                 task,
                 rng,
                 used_keys,
-                ambiguous=amb,
+                expected_vulnerable=ev,
                 eval_only=eval_only,
             )
             if s is None:
@@ -1019,22 +1167,11 @@ def _fill_bucket_list(
             salt += 1
             table, col = _pick_table_col(rng)
             extra = f" [gen_salt={rng.randint(0, 10**12)}]"
-            ambiguous = _peek_ambiguous()
+            expected_vulnerable = _peek_expected_vulnerable()
             if task == "fix":
                 vuln = _dispatch_vulnerable(attack, table, col, difficulty, rng)
                 instruction = _instruction_fix(attack, difficulty, rng, eval_only=eval_only) + extra
                 input_text = _input_fix(vuln)
-                if ambiguous:
-                    output = _pick_subtle_output(attack, table, col, rng)
-                    ev = True
-                else:
-                    output = (
-                        _hard_safe_reference(attack, table, col, rng)
-                        if difficulty == "hard"
-                        else _safe_for_attack(attack, table, col, rng)
-                    )
-                    output = _decorate_hard_output(difficulty, output, rng)
-                    ev = False
             else:
                 instruction = (
                     _instruction_generation(attack, difficulty, rng, eval_only=eval_only) + extra
@@ -1044,17 +1181,9 @@ def _fill_bucket_list(
                     if eval_only
                     else _input_generation(attack, table, col, rng)
                 )
-                if ambiguous:
-                    output = _pick_subtle_output(attack, table, col, rng)
-                    ev = True
-                else:
-                    output = (
-                        _hard_safe_reference(attack, table, col, rng)
-                        if difficulty == "hard"
-                        else _safe_for_attack(attack, table, col, rng)
-                    )
-                    output = _decorate_hard_output(difficulty, output, rng)
-                    ev = False
+            output = _make_safe_sft_output(attack, difficulty, table, col, rng)
+            if not _output_valid_for_sft(output):
+                continue
             k = prompt_hash(instruction, input_text)
             if k in used_keys:
                 continue
@@ -1068,7 +1197,9 @@ def _fill_bucket_list(
                     "attack_type": attack,
                     "difficulty": difficulty,
                     "task_type": task,
-                    "expected_vulnerable": ev,
+                    "expected_vulnerable": expected_vulnerable,
+                    "schema_table": table,
+                    "schema_column": col,
                 }
             )
             bucket_used += 1
@@ -1077,7 +1208,7 @@ def _fill_bucket_list(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="生成高难度 SQL 安全数据集（非均匀分布 + 模糊样本 + expected_vulnerable）"
+        description="生成 SQL 安全数据集（SFT output 恒为安全 Python；expected_vulnerable 仅元数据）"
     )
     parser.add_argument(
         "--num_samples",
@@ -1097,16 +1228,17 @@ def main() -> None:
     _configure_dataset_logging()
 
     num_samples = int(args.num_samples)
-    if num_samples < 420:
-        raise SystemExit("[error] --num_samples 至少为 420（7×3×2 桶填充）")
+    if num_samples < 20:
+        raise SystemExit("[error] --num_samples 至少为 20（过小则多桶计数为 0，生成不稳定）")
     if num_samples > 8000:
         raise SystemExit("[error] --num_samples 过大（>8000），请分批生成")
 
     rng = random.Random(args.seed)
     used_keys: set[str] = set()
 
-    eval_n = max(200, int(round(num_samples * float(args.eval_ratio))))
-    eval_n = min(eval_n, num_samples - 100)
+    eval_ratio = float(args.eval_ratio)
+    eval_n = int(round(num_samples * eval_ratio))
+    eval_n = max(1, min(eval_n, max(1, num_samples - 1)))
     train_n = num_samples - eval_n
 
     specs_tr, counts_tr = build_weighted_bucket_plan(train_n, DIFFICULTY_WEIGHTS_TRAIN)
@@ -1170,6 +1302,17 @@ def main() -> None:
         f"eval={vuln_ev / len(eval_rows):.3f} (target≈{TARGET_EXPECTED_VULNERABLE_FRACTION})"
     )
     print(f"[OK] dpo_pairs={len(dpo)} -> {OUT_DPO}")
+    print("[dpo_manual_check] 抽样 3 条：同一 prompt / schema；rejected 为 chosen 的脆弱同构改写")
+    for idx, row in enumerate(dpo[:3]):
+        sch = (row.get("schema_table"), row.get("schema_column"))
+        pfx = (row.get("prompt") or "")[:140].replace("\n", "\\n")
+        c0 = "\n    ".join((row.get("chosen") or "").strip().splitlines()[:4])
+        r0 = "\n    ".join((row.get("rejected") or "").strip().splitlines()[:4])
+        print(f"  [{idx + 1}] schema={sch} attack={row.get('attack_type')!r}")
+        print(f"      prompt[:140]={pfx!r}")
+        print(f"      chosen(head):\n    {c0}")
+        print(f"      rejected(head):\n    {r0}")
+
     print(
         f"[OK] research schema -> {ROOT / 'data' / 'combined' / 'train.json'} , "
         f"{ROOT / 'data' / 'generation'} , {ROOT / 'data' / 'fix'}"

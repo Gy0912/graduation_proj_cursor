@@ -1,17 +1,21 @@
 """DPO 训练数值稳定性：logits 裁剪、NaN 检测。"""
 from __future__ import annotations
 
+import contextlib
+import logging
+import os
 import sys
 from pathlib import Path
 
 import torch
-from accelerate.state import PartialState
 from transformers import TrainerCallback, TrainerControl, TrainerState
 from transformers.training_args import TrainingArguments
 from trl import DPOTrainer
+from trl.trainer import dpo_trainer as trl_dpo_trainer_module
 
 ROOT = Path(__file__).resolve().parents[1]
 NAN_LOG = ROOT / "logs" / "dpo_nan.log"
+SAFE_DPO_LOGGER = logging.getLogger("training.stable_dpo_trainer")
 
 
 def _log_nan_and_exit(reason: str, detail: str = "") -> None:
@@ -63,17 +67,34 @@ class StableDPOTrainer(DPOTrainer):
     """在标准 DPOTrainer 上增加 logits clamp、loss/梯度 NaN 防护。"""
 
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Keep dataset.map in-process to avoid accelerate logger usage in spawned workers
-        # before PartialState is initialized there.
-        if getattr(self.args, "dataset_num_proc", None) not in (None, 1):
-            if PartialState._shared_state:
-                self.accelerator.print(
-                    "[WARN] Overriding dataset_num_proc to 1 for stable DPO preprocessing."
-                )
-            self.args.dataset_num_proc = 1
+        dpo_args = kwargs.get("args")
+        if dpo_args is not None and getattr(dpo_args, "dataset_num_proc", None) not in (None, 1):
+            dpo_args.dataset_num_proc = 1
+            SAFE_DPO_LOGGER.warning(
+                "Overriding dataset_num_proc to 1 for stable DPO preprocessing."
+            )
+        with self._safe_tokenize_warning_context():
+            super().__init__(*args, **kwargs)
         self.model.register_forward_hook(_clamp_logits_hook)
         self.add_callback(DpoNanGuardCallback(self.model))
+
+    @staticmethod
+    @contextlib.contextmanager
+    def _safe_tokenize_warning_context():
+        # DPOTrainer.tokenize_fn warnings run in dataset.map context where accelerate state
+        # might be missing (especially on Windows spawn), so avoid accelerate logger calls.
+        original_warning = trl_dpo_trainer_module.logger.warning
+
+        def _safe_warning(message, *args, **kwargs):
+            if os.getenv("DPO_TOKENIZE_SILENT", "0") == "1":
+                return
+            SAFE_DPO_LOGGER.warning(message, *args)
+
+        trl_dpo_trainer_module.logger.warning = _safe_warning
+        try:
+            yield
+        finally:
+            trl_dpo_trainer_module.logger.warning = original_warning
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         out = super().compute_loss(

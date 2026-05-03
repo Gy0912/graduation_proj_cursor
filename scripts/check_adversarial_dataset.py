@@ -1,20 +1,13 @@
-r"""对抗训练数据集合规校验 CLI。
+r"""Code-only 数据集合规校验 CLI。
 
-本脚本把 ``dataset/adversarial.py::check_adversarial_dataset`` 包装成命令行验证
-器，用于在「生成之后、训练之前」独立跑一次硬契约检查：
+本脚本把 ``dataset/adversarial.py::check_adversarial_dataset`` 包装成命令行验证器，
+用于在「生成之后、训练之前」独立跑一次 code-only 硬契约检查：
 
 契约（与训练侧 ``training/sft_preprocess.py::run_pretraining_sanity_checks``
 同源）：
 
-  1. 每条 ``expected_vulnerable=True`` 样本的 ``output`` 必须同时含 3 段 marker
-     ``[SECURITY WARNING]`` / ``[EXPLANATION]`` / ``[SAFE SOLUTION]``；
-  2. SAFE SOLUTION 代码块必须严格参数化：
-        - 不含字符串拼接（``"SELECT ..." + x``）；
-        - 不含 f-string；
-        - 不含 ``.format()`` 或 ``%`` 格式化；
-        - 不含 ``sqlalchemy.text(f"...")`` / ``text("...{x}...")`` 这类 ORM 误用；
-  3. 每条 ``expected_vulnerable=False`` 样本的 ``output`` 整体也必须通过上述
-     脆弱模式扫描（负向回归）。
+  1. 每条样本的 ``output`` 必须为非空字符串；
+  2. ``ast.parse(output)`` 必须通过。
 
 运行（PowerShell）::
 
@@ -39,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from dataset.adversarial import ADVERSARIAL_MARKERS, check_adversarial_dataset
+from dataset.adversarial import check_adversarial_dataset
 
 
 DEFAULT_INPUTS: tuple[Path, ...] = (
@@ -66,21 +59,11 @@ def _print_report(path: Path, records: list[dict]) -> int:
     report = check_adversarial_dataset(records)
     print(f"[check_adversarial] file: {path}")
     print(f"[check_adversarial]   total_samples:          {report.total_samples}")
-    print(f"[check_adversarial]   adversarial_samples:    {report.adversarial_samples}")
-    print(f"[check_adversarial]   format_compliant:       {report.format_compliant}")
+    print(f"[check_adversarial]   parsed_ok:              {report.parsed_ok}")
+    print(f"[check_adversarial]   parse_failed:           {report.parse_failed}")
     print(
-        f"[check_adversarial]   format_compliance_rate: "
-        f"{report.format_compliance_rate:.2f}%"
-    )
-    print(
-        f"[check_adversarial]   safe_solution_clean:    "
-        f"{report.safe_solution_clean} / {report.adversarial_samples} "
-        f"({report.safe_solution_clean_rate:.2f}%)"
-    )
-    print(
-        f"[check_adversarial]   negatives_clean:        "
-        f"{report.negative_clean} / {report.negative_samples} "
-        f"({report.negative_clean_rate:.2f}%)"
+        f"[check_adversarial]   parse_pass_rate:         "
+        f"{report.parse_pass_rate:.2f}%"
     )
     if report.violations:
         print(
@@ -95,17 +78,15 @@ def _print_report(path: Path, records: list[dict]) -> int:
                 file=sys.stderr,
             )
         return 1
-    print(f"[check_adversarial]   OK — all contracts satisfied on {path.name}")
+    print(f"[check_adversarial]   OK — all outputs passed ast.parse on {path.name}")
     return 0
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=(
-            "Validate adversarial SFT dataset: every expected_vulnerable=True row "
-            "must carry the 3-part adversarial markers and a parameterized "
-            "SAFE SOLUTION; no row (either class) may contain SQL injection "
-            "patterns in its output."
+            "Validate code-only dataset: every row must have non-empty output "
+            "and pass ast.parse(output)."
         )
     )
     parser.add_argument(
@@ -130,8 +111,6 @@ def main() -> None:
     if not inputs:
         print("[check_adversarial] no inputs provided", file=sys.stderr)
         sys.exit(2)
-
-    print(f"[check_adversarial] markers enforced: {list(ADVERSARIAL_MARKERS)}")
 
     failures = 0
     for path in inputs:

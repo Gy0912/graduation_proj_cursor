@@ -1,0 +1,2 @@
+2026-05-03 17:32:55,094 INFO dataset build log: E:\graduation_proj_1\logs\dataset\generate_expanded_20260503T093255Z.log
+2026-05-03 17:32:55,845 INFO done train=2200 eval=300 vuln_frac_train=0.500 vuln_frac_eval=0.500

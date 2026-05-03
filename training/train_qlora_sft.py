@@ -62,7 +62,7 @@ def main() -> None:
         data_path = ROOT / files.get("sql_security_dataset", "dataset/sql_security_dataset.json")
     records = load_sql_security_json(data_path)
 
-    # --- Adversarial pre-flight（与 train_lora_sft.py 对齐）：禁止脆弱 SQL 流入 SFT target ---
+    # --- SFT pre-flight（与 train_lora_sft.py 对齐）：code-only 规范化 + python-only 断言 ---
     run_pretraining_sanity_checks(records)
 
     train_records, val_records = train_val_split(
