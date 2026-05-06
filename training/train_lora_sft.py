@@ -72,15 +72,20 @@ def main() -> None:
         print(f"[DEBUG] device count: {torch.cuda.device_count()}")
 
     # ---------- 数据：instruction / input / output ----------
+    # 2026-05-05 修复（问题 #11）：移除静默回退到仅有 100 条的旧 dataset/sql_security_dataset.json。
+    # 若 train_sft_json 指定的扩展训练集缺失，直接报错并明确指引运行数据生成脚本。
     files = cfg.get("files", {})
     train_json = files.get("train_sft_json")
-    if train_json and (ROOT / train_json).exists():
-        data_path = ROOT / train_json
-    else:
-        data_path = ROOT / files.get("sql_security_dataset", "dataset/sql_security_dataset.json")
+    if not train_json:
+        raise FileNotFoundError(
+            "配置中缺少 files.train_sft_json；请检查 configs/default.yaml 中 files.train_sft_json 是否指向扩展训练集。"
+        )
+    data_path = ROOT / train_json
     if not data_path.exists():
         raise FileNotFoundError(
-            f"未找到 {data_path}。请运行 dataset/generate_expanded_dataset.py 或 dataset/generate_sql_security_dataset.py"
+            f"训练数据 {data_path} 不存在。\n"
+            "请运行: python dataset/generate_expanded_dataset.py --num_samples 2500\n"
+            "然后将产出 data/combined/train.json 作为 files.train_sft_json 指向的目标。"
         )
     records = load_sql_security_json(data_path)
 

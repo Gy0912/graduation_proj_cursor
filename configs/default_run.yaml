@@ -35,6 +35,7 @@ eval:
   dataloader_pin_memory: true
   merge_mode: or
   enable_taint: true
+  code_only_training: true
 training:
   max_seq_len: 1024
   batch_size: 1

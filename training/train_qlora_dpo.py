@@ -84,6 +84,8 @@ def run_qlora_dpo(config_path: str) -> None:
     model = PeftModel.from_pretrained(model, str(sft_dir), is_trainable=True)
     cast_trainable_bf16_to_float16(model)
 
+    max_len = int(dcfg.get("max_length", 1024))
+
     dpo_args = DPOConfig(
         output_dir=str(out_dir),
         per_device_train_batch_size=int(tcfg.get("batch_size", 1)),
@@ -97,7 +99,7 @@ def run_qlora_dpo(config_path: str) -> None:
         bf16=False,
         fp16=False,
         max_grad_norm=1.0,
-        max_length=int(dcfg.get("max_length", 768)),
+        max_length=max_len,
         beta=float(dcfg.get("beta", 0.01)),
         precompute_ref_log_probs=True,
         precompute_ref_batch_size=1,

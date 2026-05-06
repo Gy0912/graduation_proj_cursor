@@ -1,0 +1,3 @@
+2026-05-05 02:09:22,068 INFO dataset build log: E:\graduation_proj_1\logs\dataset\generate_expanded_20260504T180922Z.log
+2026-05-05 02:09:22,679 INFO build_dpo_pairs summary: total_pairs=2200 adversarial=1100 benign=1100
+2026-05-05 02:09:22,810 INFO done train=2200 eval=300 vuln_frac_train=0.500 vuln_frac_eval=0.500

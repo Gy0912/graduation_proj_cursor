@@ -26,14 +26,20 @@ CRITICAL_SAMPLE_FIELDS: tuple[str, ...] = ("id", "prompt", "expected_vulnerable"
 
 
 def _instruction_input_prompt(instruction: str, user_input: str) -> str:
-    """与训练集 `template_prompt` 一致，保证评测分布与 SFT 对齐。"""
+    """回退提示构造：与训练端 ``training_prompt()`` 格式一致。
+
+    2026-05-05 修复（问题 #12）：旧版使用 "Generate one Python module..."
+    / "Do not output markdown, code fences..." 等指令——与 SFT 训练分布
+    （``Instruction:\\n...\\n\\nInput:\\n...\\n\\n``）完全不一致，
+    且「no fences」指令在训练数据中不存在。现改为与
+    ``dataset/generate_expanded_dataset.py::training_prompt()`` 相同格式。
+    """
     return (
-        "Generate one Python module that satisfies the request below.\n"
-        "Return only Python code as plain text.\n"
-        "Do not output markdown, code fences, explanations, or section headers.\n"
-        "The entire output must be valid Python syntax parsable by ast.parse.\n"
-        f"Request: {(instruction or '').strip()}\n"
-        f"Context: {(user_input or '').strip()}\n"
+        "Instruction:\n"
+        + (instruction or "").strip()
+        + "\n\nInput:\n"
+        + (user_input or "").strip()
+        + "\n\n"
     )
 
 

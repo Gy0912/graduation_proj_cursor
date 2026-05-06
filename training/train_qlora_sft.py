@@ -55,11 +55,20 @@ def main() -> None:
     base = cfg["model"]["base_model"]
     out_dir = ROOT / cfg["paths"]["qlora_sft_dir"]
 
+    # 2026-05-05 修复（问题 #11）：移除静默回退到仅有 100 条的旧 dataset/sql_security_dataset.json。
+    # 若 train_sft_json 指定的扩展训练集缺失，直接报错并明确指引运行数据生成脚本。
     train_json = files.get("train_sft_json")
-    if train_json and (ROOT / train_json).exists():
-        data_path = ROOT / train_json
-    else:
-        data_path = ROOT / files.get("sql_security_dataset", "dataset/sql_security_dataset.json")
+    if not train_json:
+        raise FileNotFoundError(
+            "配置中缺少 files.train_sft_json；请检查 configs/default.yaml 中 files.train_sft_json 是否指向扩展训练集。"
+        )
+    data_path = ROOT / train_json
+    if not data_path.exists():
+        raise FileNotFoundError(
+            f"训练数据 {data_path} 不存在。\n"
+            "请运行: python dataset/generate_expanded_dataset.py --num_samples 2500\n"
+            "然后将产出 data/combined/train.json 作为 files.train_sft_json 指向的目标。"
+        )
     records = load_sql_security_json(data_path)
 
     # --- SFT pre-flight（与 train_lora_sft.py 对齐）：code-only 规范化 + python-only 断言 ---

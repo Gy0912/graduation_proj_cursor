@@ -606,19 +606,17 @@ def _safe_for_attack(attack: str, table: str, col: str, rng: random.Random) -> s
 
 
 def _decorate_hard_output(difficulty: str, code: str, rng: random.Random) -> str:
-    """hard：误导性命名 / 与事实不符的注释 / 多函数外观。"""
-    if difficulty != "hard":
-        return code
-    prefix = rng.choice(
-        [
-            "# sanitize_input() validated upstream — SQL fragment is trusted\n",
-            "# reviewed: uses safe_query() wrapper (wrapper still builds SQL)\n",
-            "# ORM migration pending; keep legacy string assembly\n",
-        ]
-    )
-    if "def " in code and rng.random() < 0.4:
-        code = code.replace("def fetch_rows", "def safe_query", 1)
-    return prefix + code
+    """hard：增强代码复杂度（多函数、间接调用等）。
+
+    2026-05-05 修复（问题 #6）：旧版在此注入误导性注释（如
+    ``# ORM migration pending; keep legacy string assembly``）与误导性函数名
+    （``def safe_query``），这些会随 SFT code-only 规范化进入训练目标，
+    导致模型学会在安全代码旁生成暗示不安全的注释/命名。现已移除所有误导性装饰——
+    hard 样本的难度差异完全由 ``_hard_safe_reference`` 的代码结构体现。
+    """
+    # hard 难度已通过 _hard_safe_reference 的代码结构差异体现，不再注入表面装饰。
+    _ = (difficulty, rng)
+    return code
 
 
 def _make_safe_sft_output(
@@ -867,8 +865,14 @@ def _vulnerable_variant_from_chosen(
     attack: str,
     _difficulty: str,
     rng: random.Random,
-) -> str:
-    """将安全 ``chosen`` 改写为同一任务语境下的脆弱实现（结构尽量同构）。"""
+) -> str | None:
+    """将安全 ``chosen`` 改写为同一任务语境下的脆弱实现（结构尽量同构）。
+
+    2026-05-05 修复（问题 #5）：三种正则策略均可能因 chosen 代码的轻微偏离
+    （不同缩进、变量名、安全模式）而全部返回 None。旧版直接 raise ValueError
+    导致整个 ``build_dpo_pairs`` 崩溃。现改为返回 None 让调用方优雅回退到
+    ``_dispatch_vulnerable`` 的从头生成路径。
+    """
     if contains_vulnerable_sql_pattern(chosen_body)[0]:
         raise ValueError("build_dpo_pairs: chosen 不应命中脆弱 SQL 模式")
 
@@ -902,10 +906,8 @@ def _vulnerable_variant_from_chosen(
         if contains_vulnerable_sql_pattern(cand)[0]:
             return cand
 
-    raise ValueError(
-        f"build_dpo_pairs: 无法从 chosen 生成脆弱变体（attack={attack!r}, "
-        f"difficulty={_difficulty!r}）。"
-    )
+    # 三种正则策略均失败 → 返回 None，由调用方走 _dispatch_vulnerable 从头生成
+    return None
 
 
 def _instruction_generation(
@@ -1050,7 +1052,15 @@ def to_eval_prompt_row(row: dict) -> dict:
 
 
 def build_dpo_pairs(train_rows: list[dict], rng: random.Random) -> list[dict]:
+    """生成 DPO 偏好对。
+
+    2026-05-05 修复（问题 #8）：仅对 expected_vulnerable==True 的对抗提示生成
+    DPO 对。良性提示（expected_vulnerable==False）上 SFT 已教会模型输出安全代码，
+    DPO 的「安全 > 脆弱」信号为冗余——跳过以聚焦于对抗性提示上的安全强化。
+    """
     dpo: list[dict] = []
+    fallback_count = 0
+    benign_skipped = 0
     for r in train_rows:
         if "expected_vulnerable" not in r:
             raise ValueError(
@@ -1064,6 +1074,11 @@ def build_dpo_pairs(train_rows: list[dict], rng: random.Random) -> list[dict]:
                 f"{type(r['expected_vulnerable']).__name__}: {r['expected_vulnerable']!r} "
                 f"(attack_type={r.get('attack_type')!r})"
             )
+        # 良性提示的 DPO 对为冗余信号——SFT 已教会模型在这些提示上输出安全代码。
+        # 仅对对抗提示（expected_vulnerable==True）生成 DPO 对。
+        if not r["expected_vulnerable"]:
+            benign_skipped += 1
+            continue
         instr, inp, out = r["instruction"], r.get("input", ""), r["output"]
         prompt = training_prompt(str(instr), str(inp or ""))
         schema_table, schema_column = _infer_schema_from_row(r)
@@ -1089,6 +1104,17 @@ def build_dpo_pairs(train_rows: list[dict], rng: random.Random) -> list[dict]:
             )
 
         rejected_raw = _vulnerable_variant_from_chosen(chosen_body, atk, diff, rng)
+        if rejected_raw is None:
+            # 2026-05-05 修复（问题 #5）：chosen 代码与三种正则策略均不匹配时，
+            # 回退到 _dispatch_vulnerable 从头生成脆弱代码，而非崩溃。
+            print(
+                f"[DPO fallback] regex strategies exhausted for "
+                f"attack={atk!r} difficulty={diff!r} "
+                f"table={schema_table!r} col={schema_column!r} — "
+                f"using _dispatch_vulnerable instead"
+            )
+            fallback_count += 1
+            rejected_raw = _dispatch_vulnerable(atk, schema_table, schema_column, diff, rng)
         rejected_body = extract_code_only_completion(rejected_raw)
         if rejected_body is None:
             rejected_body = rejected_raw.strip()
@@ -1118,6 +1144,17 @@ def build_dpo_pairs(train_rows: list[dict], rng: random.Random) -> list[dict]:
                 "schema_column": schema_column,
             }
         )
+    if fallback_count > 0:
+        print(
+            f"[DPO] fallback summary: {fallback_count}/{len(train_rows)} rows "
+            f"({100.0 * fallback_count / len(train_rows):.2f}%) used "
+            f"_dispatch_vulnerable (regex transformation failed for chosen code)"
+        )
+    print(
+        f"[DPO] pairs generated: {len(dpo)} (adversarial only); "
+        f"benign skipped: {benign_skipped}/{len(train_rows)} "
+        f"({100.0 * benign_skipped / len(train_rows):.2f}%)"
+    )
     rng.shuffle(dpo)
     return dpo
 

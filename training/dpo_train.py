@@ -104,7 +104,7 @@ def main() -> None:
 
     cast_trainable_bf16_to_float16(model)
 
-    max_len = int(dcfg.get("max_length", 768))
+    max_len = int(dcfg.get("max_length", 1024))
     beta = float(dcfg.get("beta", 0.01))
 
     dpo_args = DPOConfig(

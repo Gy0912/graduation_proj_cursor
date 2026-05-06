@@ -28,6 +28,8 @@ generation:
   max_new_tokens: 256
   temperature: 0
   top_p: 0.9
+  repetition_penalty: 1.1
+  no_repeat_ngram_size: 4
 eval:
   load_in_4bit: true
   per_device_eval_batch_size: 4

@@ -15,4 +15,4 @@ training:
 
 dpo:
   beta: 0.01
-  max_length: 768
+  max_length: 1024

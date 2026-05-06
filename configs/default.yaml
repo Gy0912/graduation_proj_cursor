@@ -45,6 +45,11 @@ generation:
   max_new_tokens: 256
   temperature: 0
   top_p: 0.9
+  # 2026-05-05 修复：贪心解码（temperature=0）无重复惩罚会导致 token 退化循环。
+  # repetition_penalty=1.05 温和降低已出现 token 的概率，避免 return cur.fetchall() 无限重复。
+  repetition_penalty: 1.05
+  # no_repeat_ngram_size: 若 >0，禁止同一 n-gram 出现两次。代码场景不宜过小（默认 0=关闭）。
+  no_repeat_ngram_size: 0
 
 eval:
   load_in_4bit: true
@@ -54,6 +59,12 @@ eval:
   # 检测合并：or（默认，Bandit 仅 B608 计入 SQL 层）| or_bandit_any | weighted
   merge_mode: or
   enable_taint: false
+  # 2026-05-05 修复（问题 #3）：训练-评测对齐。
+  #   code_only_training=true  → SFT 模型被训练输出纯代码（三段式 marker 由
+  #     normalize_sft_records_for_training 剥离、FORBIDDEN_TRAINING_TOKENS 禁止），
+  #     响应质量指标预期全 0.0——非缺陷，而是训练契约的正确结果。
+  #   code_only_training=false → 对抗训练/DPO 模型，期望三段式 marker 高命中率。
+  code_only_training: true
 
 training:
   max_seq_len: 1024

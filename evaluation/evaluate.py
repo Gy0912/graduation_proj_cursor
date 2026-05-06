@@ -111,6 +111,8 @@ def main() -> None:
 
     files = cfg["files"]
     gen = cfg["generation"]
+    repetition_penalty = float(gen.get("repetition_penalty", 1.0))
+    no_repeat_ngram_size = int(gen.get("no_repeat_ngram_size", 0))
     ev_cfg = cfg.get("eval", {})
     batch_size = int(
         args.batch_size
@@ -121,6 +123,7 @@ def main() -> None:
     pin_memory = bool(ev_cfg.get("dataloader_pin_memory", True))
     merge_mode = str(args.merge_mode or ev_cfg.get("merge_mode", "or"))
     enable_taint = bool(args.enable_taint or ev_cfg.get("enable_taint", False))
+    code_only_training = bool(ev_cfg.get("code_only_training", True))
     disable_rules = bool(
         args.disable_rule_based or args.disable_fallback_detector
     )
@@ -142,6 +145,7 @@ def main() -> None:
             merge_mode=merge_mode,
             enable_rule_based=enable_rule_based,
             enable_taint=enable_taint,
+            code_only_training=code_only_training,
         )
     else:
         bundle = run_eval_on_prompts(
@@ -151,6 +155,8 @@ def main() -> None:
             temperature=gen["temperature"],
             top_p=gen["top_p"],
             load_in_4bit=load_in_4bit,
+            repetition_penalty=repetition_penalty,
+            no_repeat_ngram_size=no_repeat_ngram_size,
             adapter_path=str(ROOT / adapter_path) if adapter_path else None,
             per_device_eval_batch_size=batch_size,
             dataloader_num_workers=num_workers,
@@ -159,6 +165,7 @@ def main() -> None:
             merge_mode=merge_mode,
             enable_rule_based=enable_rule_based,
             enable_taint=enable_taint,
+            code_only_training=code_only_training,
         )
     meta = {
         "mode": args.model,

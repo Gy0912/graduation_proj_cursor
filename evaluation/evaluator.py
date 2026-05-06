@@ -51,14 +51,36 @@ def _response_structure_flags(raw_output: str | None) -> dict[str, bool]:
 
 
 def _truncate_prompt_leakage(model_output: str | None) -> str:
-    """在抽取代码前移除泄漏的提示词段落。"""
+    """截断模型输出中复读的提示词段落，保留模型真正生成的内容。
+
+    prompt 模板固定为 ``Instruction:\\n...\\n\\nInput:\\n...\\n\\n``（见
+    ``sft_preprocess.py`` 与 ``generate_expanded_dataset.py:training_prompt()``），
+    模型输出是 prompt 的**续写**。若模型复读了 prompt（以 Instruction: 起头或
+    中间夹带 Input:），说明模型在"背诵"而非"回答"。
+
+    2026-05-05 旧版：在找到 Instruction:/Input: 时取**之前**的内容——但模型从
+    prompt 末尾开始续写，Instruction: 是输出开头，取之前 = 丢弃整个输出 = 空串。
+    2026-05-06 修复：取最后一个 ``\\nInput:\\n`` **之后**的内容。模型输出中
+    可能多次出现 Input:（复读 prompt），最后一个才是模型真正读完 prompt 后生成的。
+    """
     text = model_output or ""
-    instruction_idx = text.find("### Instruction:")
-    if instruction_idx != -1:
-        text = text[:instruction_idx]
-    input_idx = text.find("### Input:")
-    if input_idx != -1:
-        text = text[:input_idx]
+    if not text:
+        return text
+
+    # 策略：找最后一个 \nInput:\n（prompt 的最后一段标记），取其后内容。
+    # 这是模型在读完整个 prompt 之后的真实生成。
+    last_input_marker = text.rfind("\nInput:\n")
+    if last_input_marker != -1:
+        text = text[last_input_marker + len("\nInput:\n"):]
+
+    # prompt 以 \n\n 结尾，Input 段后通常还有 \n\n 到模型输出的分隔。
+    # 跳过开头的空白行和可能的 "Output:" 伪标记。
+    text = text.lstrip("\n")
+    if text.startswith("Output:"):
+        newline_pos = text.find("\n")
+        if newline_pos != -1:
+            text = text[newline_pos + 1:].lstrip("\n")
+
     return text
 
 
@@ -415,6 +437,7 @@ def run_eval_always_safe(
     merge_mode: str = "or",
     enable_rule_based: bool = True,
     enable_taint: bool = False,
+    code_only_training: bool = True,
 ) -> MetricBundle:
     """
     基线健全性检查：不调用 LLM，每条样本恒返回同一参数化安全代码。
@@ -449,7 +472,7 @@ def run_eval_always_safe(
             )
         )
 
-    bundle = aggregate_metrics(evaluated_samples)
+    bundle = aggregate_metrics(evaluated_samples, code_only_training=code_only_training)
     print_eval_summary(bundle)
     return bundle
 
@@ -461,6 +484,8 @@ def run_eval_on_prompts(
     temperature: float,
     top_p: float,
     load_in_4bit: bool,
+    repetition_penalty: float = 1.0,
+    no_repeat_ngram_size: int = 0,
     adapter_path: str | None = None,
     per_device_eval_batch_size: int = 4,
     dataloader_num_workers: int = 2,
@@ -469,6 +494,7 @@ def run_eval_on_prompts(
     merge_mode: str = "or",
     enable_rule_based: bool = True,
     enable_taint: bool = False,
+    code_only_training: bool = True,
 ) -> MetricBundle:
     import torch
     from torch.utils.data import DataLoader, TensorDataset
@@ -508,6 +534,11 @@ def run_eval_on_prompts(
         f"[eval] dataloader workers={max(0, int(dataloader_num_workers))}, "
         f"pin_memory={bool(dataloader_pin_memory)}"
     )
+    print(
+        f"[eval] generation: max_new_tokens={max_new_tokens}, temperature={temperature}, "
+        f"top_p={top_p}, repetition_penalty={repetition_penalty}, "
+        f"no_repeat_ngram_size={no_repeat_ngram_size}"
+    )
 
     evaluated_samples: list[dict[str, Any]] = []
     invalid_debug_samples: list[dict[str, Any]] = []
@@ -527,13 +558,25 @@ def run_eval_on_prompts(
                 do_sample=do_sample,
                 temperature=temperature if do_sample else None,
                 top_p=top_p if do_sample else None,
+                repetition_penalty=repetition_penalty if repetition_penalty != 1.0 else None,
+                no_repeat_ngram_size=no_repeat_ngram_size if no_repeat_ngram_size > 0 else None,
                 pad_token_id=tok.pad_token_id,
                 eos_token_id=tok.eos_token_id,
             )
 
             for row in range(out_ids.size(0)):
                 prompt_len = int(attention_mask[row].sum().item())
-                gen_tokens = out_ids[row, prompt_len:]
+                gen_tokens_full = out_ids[row, prompt_len:]
+                # 2026-05-05 修复（问题 #10）：在第一个 EOS 处截断，
+                # 防止模型在输出有效代码后继续生成第二个代码块进入抽取器。
+                gen_list = gen_tokens_full.tolist()
+                eos_pos = None
+                if tok.eos_token_id is not None:
+                    try:
+                        eos_pos = gen_list.index(tok.eos_token_id)
+                    except ValueError:
+                        pass
+                gen_tokens = gen_tokens_full[:eos_pos] if (eos_pos is not None and eos_pos > 0) else gen_tokens_full
                 text = tok.decode(gen_tokens, skip_special_tokens=True)
                 cleaned_for_extraction = _truncate_prompt_leakage(text)
                 extraction = extract_python_code_with_debug(cleaned_for_extraction)
@@ -607,7 +650,7 @@ def run_eval_on_prompts(
     )
     _write_invalid_extraction_debug(invalid_debug_samples)
 
-    bundle = aggregate_metrics(evaluated_samples)
+    bundle = aggregate_metrics(evaluated_samples, code_only_training=code_only_training)
     print_eval_summary(bundle)
     return bundle
 
