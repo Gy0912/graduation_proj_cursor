@@ -47,6 +47,13 @@ def load_dpo_dataset(path: Path) -> Dataset:
                     "prompt": r["prompt"],
                     "chosen": r["chosen"],
                     "rejected": r["rejected"],
+                    "attack_type": r.get("attack_type"),
+                    "difficulty": r.get("difficulty"),
+                    "task_type": r.get("task_type"),
+                    "expected_vulnerable": r.get("expected_vulnerable"),
+                    "schema_table": r.get("schema_table"),
+                    "schema_column": r.get("schema_column"),
+                    "chosen_framework": r.get("chosen_framework"),
                 }
             )
     return Dataset.from_list(rows)

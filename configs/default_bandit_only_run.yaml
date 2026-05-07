@@ -28,8 +28,8 @@ generation:
   max_new_tokens: 256
   temperature: 0
   top_p: 0.9
-  repetition_penalty: 1.1
-  no_repeat_ngram_size: 4
+  repetition_penalty: 1.05
+  no_repeat_ngram_size: 0
 eval:
   load_in_4bit: true
   per_device_eval_batch_size: 4
@@ -37,6 +37,7 @@ eval:
   dataloader_pin_memory: true
   merge_mode: or
   enable_taint: true
+  code_only_training: true
 training:
   max_seq_len: 1024
   batch_size: 1
@@ -61,8 +62,8 @@ training:
   load_in_4bit: true
   lora_target_modules: auto
 dpo:
-  beta: 0.01
-  max_length: 768
+  beta: 0.1
+  max_length: 1024
   max_prompt_length: 512
 outputs:
   always_safe_results: outputs/always_safe_results_bandit_only.json

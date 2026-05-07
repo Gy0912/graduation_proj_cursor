@@ -95,9 +95,8 @@ training:
   lora_target_modules: auto
 
 dpo:
-  beta: 0.01
-  # DPO 双前向，768 更省显存（8GB）；可在 configs/dpo.yaml 覆盖为 1024
-  max_length: 768
+  beta: 0.1
+  max_length: 1024
   max_prompt_length: 512
 
 outputs:

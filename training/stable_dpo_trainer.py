@@ -97,49 +97,86 @@ class StableDPOTrainer(DPOTrainer):
         )
 
         def _tokenize_one(example):
-            """与 TRL tokenize_fn 等价的单条 tokenization（主进程运行）。"""
+            """与 TRL tokenize_fn 等价的单条 tokenization（主进程运行）。
+
+            P0-3 修复（2026-05-06）：prompt 使用 add_special_tokens=True
+            以确保序列以 BOS token 开头（StarCoder2 的 <|endoftext|>）。
+            chosen/rejected 保持 add_special_tokens=False 避免中段
+            重复插入 BOS。
+            """
             prompt = example["prompt"]
             chosen = example["chosen"]
             rejected = example["rejected"]
 
-            prompt_ids = processing_class(prompt, add_special_tokens=False)["input_ids"]
+            prompt_ids = processing_class(prompt, add_special_tokens=True)["input_ids"]
             chosen_ids = processing_class(chosen, add_special_tokens=False)["input_ids"]
             rejected_ids = processing_class(rejected, add_special_tokens=False)["input_ids"]
 
-            # Truncation (与 TRL 逻辑一致)
+            # Truncation (与 TRL 逻辑一致，但保留 BOS)
             if max_prompt is not None and len(prompt_ids) > max_prompt:
-                prompt_ids = prompt_ids[-max_prompt:]
+                # 保留 BOS（第一个 token），从右侧截取剩余长度
+                if max_prompt <= 1:
+                    prompt_ids = prompt_ids[:1]  # 仅保留 BOS
+                else:
+                    prompt_ids = [prompt_ids[0]] + prompt_ids[-(max_prompt - 1):]
             if max_len is not None:
                 total_len = len(prompt_ids) + max(len(chosen_ids), len(rejected_ids))
                 if total_len > max_len:
                     # 优先截断 chosen/rejected，保留 prompt
                     budget = max_len - len(prompt_ids)
                     if budget <= 0:
-                        prompt_ids = prompt_ids[-max_len:]
+                        # 极端情况：prompt 本身超过 max_len，保留 BOS 截断
+                        if max_len <= 1:
+                            prompt_ids = prompt_ids[:1]
+                        else:
+                            prompt_ids = [prompt_ids[0]] + prompt_ids[-(max_len - 1):]
                         budget = 0
                     chosen_ids = chosen_ids[:budget]
                     rejected_ids = rejected_ids[:budget]
 
             # Build prompt + chosen/rejected
+            # P1-6 修复（2026-05-06）：budget==0 时 chosen/rejected 为空
+            # → DPO loss=0 → 梯度=0 → 浪费计算。丢弃此类样本。
+            if len(chosen_ids) == 0 or len(rejected_ids) == 0:
+                return None
+
             chosen_input_ids = prompt_ids + chosen_ids
             chosen_labels = [-100] * len(prompt_ids) + chosen_ids
             rejected_input_ids = prompt_ids + rejected_ids
             rejected_labels = [-100] * len(prompt_ids) + rejected_ids
 
             return {
-                "chosen_input_ids": chosen_input_ids,
+                "chosen_ids": chosen_ids,
                 "chosen_attention_mask": [1] * len(chosen_input_ids),
                 "chosen_labels": chosen_labels,
-                "rejected_input_ids": rejected_input_ids,
+                "rejected_ids": rejected_ids,
                 "rejected_attention_mask": [1] * len(rejected_input_ids),
                 "rejected_labels": rejected_labels,
-                "prompt_input_ids": prompt_ids,
+                "prompt_ids": prompt_ids,
                 "prompt_attention_mask": [1] * len(prompt_ids),
             }
 
         tokenized_rows = []
+        dropped_empty = 0
         for example in dataset:
-            tokenized_rows.append(_tokenize_one(example))
+            row = _tokenize_one(example)
+            if row is not None:
+                tokenized_rows.append(row)
+            else:
+                dropped_empty += 1
+
+        if dropped_empty > 0:
+            SAFE_DPO_LOGGER.warning(
+                "P1-6: %d/%d DPO samples dropped (chosen/rejected fully truncated — "
+                "prompt too long for max_length=%s). Consider increasing max_length "
+                "or reducing prompt length.",
+                dropped_empty, len(dataset), max_len,
+            )
+        if len(tokenized_rows) == 0:
+            raise ValueError(
+                "All DPO samples truncated to zero — reduce prompt length "
+                "or increase max_length"
+            )
 
         # 用 from_list 构建 Dataset（避免 from_dict 对不等长 list 的抱怨）
         return Dataset.from_list(tokenized_rows)

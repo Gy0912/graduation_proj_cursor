@@ -671,8 +671,370 @@ def _extract_execute_param_pymysql(code: str) -> str | None:
     return m.group(1) if m else None
 
 
+# ================================================================
+# P0-1 修复：AST 级别的 chosen→rejected 同构变换
+#
+# 旧版 _try_variant_* 函数使用极其精确的正则模板匹配，任何缩进/变量名/空行
+# 差异都会导致匹配失败。失败后回退到 _dispatch_vulnerable() 生成完全独立的
+# 脆弱代码，导致 DPO 训练信号从「同一任务：安全实现 > 脆弱变体」退化为
+# 「任意安全代码 > 任意脆弱代码」。
+#
+# 新策略：
+#   1. AST 解析 chosen 代码，定位 execute() 调用点及其 SQL 变量定义
+#   2. 行级手术替换：移除 SQL 赋值行，将 execute 调用改为内联拼接形式
+#   3. 保留所有其它代码结构（import、函数签名、控制流）完全不变
+#   4. AST 变换失败时回退到旧正则策略，再失败才走 _dispatch_vulnerable
+# ================================================================
+
+def _ast_find_sql_defs(tree: ast.AST) -> dict:
+    """在 AST 中定位所有 SQL 字符串变量定义。
+
+    返回 {var_name: {line_no, sql_str, is_text_wrapped}}。
+    ``is_text_wrapped`` 为 True 时表示 ``text("SELECT ...")`` (SQLAlchemy)。
+    """
+    results: dict = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Assign):
+            continue
+        for target in node.targets:
+            if not isinstance(target, ast.Name):
+                continue
+            val = node.value
+            sql_str: str | None = None
+            is_text_wrapped = False
+            if isinstance(val, ast.Constant) and isinstance(val.value, str):
+                sql_str = val.value
+            elif isinstance(val, ast.Call):
+                # text("SELECT ...") 包装 (SQLAlchemy)
+                if (
+                    isinstance(val.func, ast.Name)
+                    and val.func.id == "text"
+                    and len(val.args) >= 1
+                    and isinstance(val.args[0], ast.Constant)
+                    and isinstance(val.args[0].value, str)
+                ):
+                    sql_str = val.args[0].value
+                    is_text_wrapped = True
+            if sql_str and ("SELECT" in sql_str.upper() or "select" in sql_str):
+                results[target.id] = {
+                    "line_no": node.lineno,
+                    "sql_str": sql_str,
+                    "is_text_wrapped": is_text_wrapped,
+                }
+    return results
+
+
+def _ast_find_indirect_sql(tree: ast.AST) -> dict | None:
+    """处理 _full_query() 间接模式：函数返回静态 SQL 字符串。"""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for child in ast.walk(node):
+            if isinstance(child, ast.Return) and isinstance(child.value, ast.Constant):
+                sql_str = child.value.value
+                if isinstance(sql_str, str) and ("SELECT" in sql_str.upper() or "select" in sql_str):
+                    return {
+                        "func_name": node.name,
+                        "func_line_no": node.lineno,
+                        "func_end_line_no": getattr(node, "end_lineno", node.lineno),
+                        "sql_str": sql_str,
+                        "is_text_wrapped": False,
+                    }
+    return None
+
+
+def _ast_find_execute_calls(
+    tree: ast.AST, source_lines: list[str]
+) -> list[dict]:
+    """在 AST 中定位所有参数化 execute() 调用。
+
+    每个结果含：line_no, end_line_no, sql_var_name, param_var, param_kind,
+    obj_text, has_return_wrapper, indent, is_sqlalchemy。
+    """
+    results: list[dict] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Attribute) and node.func.attr == "execute"):
+            continue
+        if len(node.args) < 2:
+            continue
+
+        first_arg = node.args[0]
+        second_arg = node.args[1]
+
+        # 提取 SQL 变量名或直接常量
+        sql_var_name: str | None = None
+        sql_str_direct: str | None = None
+        if isinstance(first_arg, ast.Name):
+            sql_var_name = first_arg.id
+        elif isinstance(first_arg, ast.Constant) and isinstance(first_arg.value, str):
+            sql_str_direct = first_arg.value
+
+        # 提取参数信息
+        param_var: str | None = None
+        param_kind: str = "unknown"
+        if isinstance(second_arg, ast.Tuple) and len(second_arg.elts) >= 1:
+            if isinstance(second_arg.elts[0], ast.Name):
+                param_var = second_arg.elts[0].id
+                param_kind = "tuple"
+        elif isinstance(second_arg, ast.Dict):
+            # SQLAlchemy 风格: {"v": value}
+            # 注意：必须从 values 中提取变量名，而非 keys
+            # keys[0] = Constant("v") — 占位符名（无用）
+            # values[0] = Name("value") — Python 变量名（需要）
+            for v_node in second_arg.values:
+                if isinstance(v_node, ast.Name):
+                    param_var = v_node.id
+                    param_kind = "dict"
+                    break
+
+        # 检测是否 SQLAlchemy（session.execute 或 使用 text()）
+        is_sqlalchemy = "session" in (ast.unparse(node.func.value) if hasattr(ast, "unparse") else "")
+
+        # 检测是否被 return 包裹
+        has_return = False
+        for parent in ast.walk(tree):
+            for child in ast.iter_child_nodes(parent):
+                if child is node and isinstance(parent, ast.Return):
+                    has_return = True
+                    break
+
+        # 提取缩进
+        line_idx = node.lineno - 1
+        indent = ""
+        if 0 <= line_idx < len(source_lines):
+            indent = source_lines[line_idx][: len(source_lines[line_idx]) - len(source_lines[line_idx].lstrip())]
+
+        end_line = getattr(node, "end_lineno", node.lineno)
+
+        results.append({
+            "line_no": node.lineno,
+            "end_line_no": end_line,
+            "sql_var_name": sql_var_name,
+            "sql_str_direct": sql_str_direct,
+            "param_var": param_var,
+            "param_kind": param_kind,
+            "is_sqlalchemy": is_sqlalchemy,
+            "has_return_wrapper": has_return,
+            "indent": indent,
+        })
+    return results
+
+
+def _ast_build_concat_expr(
+    sql_prefix: str,
+    param_var: str,
+    attack: str,
+    is_sqlalchemy: bool,
+) -> str:
+    """根据攻击类型构建拼接形式的 SQL 表达式。
+
+    sql_prefix: 占位符之前的 SQL 前缀（含尾部空格），如 "SELECT * FROM t WHERE c = "
+    param_var: 参数变量名，如 "value"
+
+    注意：各 attack 的输出形式必须与 contains_vulnerable_sql_pattern 中的
+    规则对齐（fstring_sql / execute_plus_concat / format_sql / …）。
+    """
+    prefix_esc = sql_prefix.rstrip()
+    # 去掉前缀末尾可能已存在的单引号（某些模式自带）
+    if prefix_esc.endswith("'"):
+        prefix_esc = prefix_esc[:-1]
+
+    if attack == "fstring":
+        # 命中 fstring_sql: execute(f"...")
+        expr = f'f"{prefix_esc}\'{{{param_var}}}\'"'
+    elif attack == "format_string":
+        # 使用 \" + \"{}\".format() + \" 模式以命中 execute_plus_concat
+        # （直接在 execute() 里放 .format() 会因为 SQL 内单引号导致
+        #  format_sql 正则在单引号处提前截断而误判为安全）
+        expr = f'"{prefix_esc}\'\" + \"{{}}\".format({param_var}) + \"\'"'
+    elif attack == "fake_sanitization":
+        # 命中 execute_plus_concat
+        expr = f'"{prefix_esc}\'\" + {param_var}.replace(\"\'\", \"\") + \"\'"'
+    elif attack == "parameterized_query":
+        # 命中 execute_plus_concat
+        expr = f'"{prefix_esc}\'\" + {param_var} + \"\'"'
+    else:
+        # 默认：直接拼接（string_concat, orm_misuse, indirect_injection）
+        # 命中 execute_plus_concat
+        expr = f'"{prefix_esc}\'\" + {param_var} + \"\'"'
+
+    # SQLAlchemy 需要用 text() 包裹（fstring 除外——直接 execute(f"...")）
+    if is_sqlalchemy and attack not in ("fstring",):
+        expr = f"text({expr})"
+
+    return expr
+
+
+def _ast_surgical_replace(
+    source_lines: list[str],
+    exec_info: dict,
+    sql_def: dict | None,
+    indirect_sql: dict | None,
+    attack: str,
+) -> str | None:
+    """执行手术式替换：移除 SQL 赋值/间接函数，改写 execute 行为内联拼接。"""
+    import copy
+    result_lines = list(source_lines)
+    lines_to_delete: set[int] = set()
+
+    # 确定 SQL 字符串
+    sql_str: str | None = None
+    is_text_wrapped = False
+
+    if sql_def is not None:
+        sql_str = sql_def["sql_str"]
+        is_text_wrapped = sql_def.get("is_text_wrapped", False)
+        lines_to_delete.add(sql_def["line_no"] - 1)
+    elif indirect_sql is not None:
+        sql_str = indirect_sql["sql_str"]
+        # 删除整个 _full_query() 函数（end_lineno 是包含的，range 需 +1）
+        for li in range(indirect_sql["func_line_no"] - 1, indirect_sql["func_end_line_no"]):
+            lines_to_delete.add(li)
+        # 还需要删除 sql = _full_query() 行
+        #  注意：不能用 "_full_query()" 简单搜索——会先命中 def _full_query() 行
+        #  改用 AST 精确定位赋值行
+        exec_line_idx = exec_info["line_no"] - 1
+        sql_var = exec_info.get("sql_var_name")  # e.g. "sql"
+        found_assignment = False
+        for offset in range(-15, 0):
+            check_idx = exec_line_idx + offset
+            if check_idx < 0:
+                continue
+            line = result_lines[check_idx]
+            # 匹配 "sql = _full_query()" 或类似赋值（不匹配 def _full_query）
+            if sql_var and re.search(rf'\b{re.escape(sql_var)}\s*=\s*{re.escape(indirect_sql["func_name"])}\s*\(', line):
+                lines_to_delete.add(check_idx)
+                found_assignment = True
+                break
+            # 回退：匹配任意 "= _full_query()" 且不是 def 行
+            if not found_assignment and "_full_query()" in line and "def " not in line:
+                lines_to_delete.add(check_idx)
+                found_assignment = True
+                break
+    elif exec_info.get("sql_str_direct"):
+        sql_str = exec_info["sql_str_direct"]
+    else:
+        return None
+
+    # 提取 SQL 前缀（占位符之前的部分）
+    # 模式: "SELECT * FROM t WHERE c = %s" 或 "SELECT * FROM t WHERE c = :v"
+    sql_prefix = sql_str
+    placeholder = ""
+    for ph in ("%s", "?", ":v", ":value", ":val", ":name", ":uid"):
+        idx = sql_str.find(ph)
+        if idx >= 0:
+            sql_prefix = sql_str[:idx]
+            placeholder = ph
+            break
+
+    # 如果没找到占位符，尝试更宽的匹配
+    if not placeholder:
+        m = re.search(r"(:\w+)", sql_str)
+        if m:
+            placeholder = m.group(1)
+            sql_prefix = sql_str[: m.start()]
+
+    param_var = exec_info.get("param_var") or "value"
+    is_sqlalchemy = exec_info.get("is_sqlalchemy", False) or is_text_wrapped
+
+    # 构建拼接表达式
+    concat_expr = _ast_build_concat_expr(sql_prefix, param_var, attack, is_sqlalchemy)
+
+    # 构建新的 execute 行
+    exec_line_idx = exec_info["line_no"] - 1
+    orig_line = result_lines[exec_line_idx]
+    indent = exec_info.get("indent", "")
+
+    if is_sqlalchemy:
+        # session.execute(text("SQL...")).fetchall()
+        if exec_info.get("has_return_wrapper"):
+            # 替换整行 return session.execute(stmt, {...}).fetchall()
+            new_line = f"{indent}return session.execute({concat_expr}).fetchall()\n"
+        else:
+            new_line = f"{indent}session.execute({concat_expr}).fetchall()\n"
+    else:
+        # cur.execute("SQL...") 或 cur.execute(f"...")
+        new_line = f"{indent}cur.execute({concat_expr})\n"
+
+    # 如果 execute 跨多行，还需要清理后续行
+    end_line_idx = exec_info.get("end_line_no", exec_info["line_no"]) - 1
+    for li in range(exec_line_idx, end_line_idx + 1):
+        if li == exec_line_idx:
+            result_lines[li] = new_line
+        else:
+            lines_to_delete.add(li)
+
+    # 删除标记的行（从后往前删）
+    for li in sorted(lines_to_delete, reverse=True):
+        if 0 <= li < len(result_lines):
+            # 只删除 SQL 赋值行和间接函数行，不删除 execute 行本身
+            if li != exec_line_idx:
+                result_lines[li] = ""
+
+    # 清理多余空行
+    text = "".join(result_lines)
+    text = re.sub(r"\n\n\n+", "\n\n", text)
+    text = text.strip() + "\n"
+
+    return text
+
+
+def _ast_surgical_variant(chosen_body: str, attack: str) -> str | None:
+    """AST 指导的手术替换：参数化→拼接，保留所有代码结构不变。
+
+    这是 P0-1 修复的核心函数。按优先级：
+    1. 精确匹配 execute(sql/stmt, params) 模式
+    2. 找到对应的 SQL 变量定义（直接赋值或 _full_query() 间接）
+    3. 手术式替换：移除 SQL 赋值行，将 execute 改为内联拼接
+    """
+    try:
+        tree = ast.parse(chosen_body)
+    except SyntaxError:
+        return None
+
+    source_lines = chosen_body.splitlines(True)
+
+    # Step 1: 找所有参数化 execute() 调用
+    exec_calls = _ast_find_execute_calls(tree, source_lines)
+    if not exec_calls:
+        return None
+
+    # Step 2: 找 SQL 变量定义
+    sql_defs = _ast_find_sql_defs(tree)
+
+    # Step 3: 找间接 SQL（_full_query 模式）
+    indirect_sql = _ast_find_indirect_sql(tree)
+
+    # Step 4: 逐个尝试变换
+    for exec_info in exec_calls:
+        sql_var = exec_info.get("sql_var_name")
+        sql_def = sql_defs.get(sql_var) if sql_var else None
+
+        result = _ast_surgical_replace(
+            source_lines, exec_info, sql_def, indirect_sql, attack
+        )
+        if result is None:
+            continue
+
+        # 验证
+        try:
+            ast.parse(result)
+        except SyntaxError:
+            continue
+
+        vuln, _ = contains_vulnerable_sql_pattern(result)
+        if vuln:
+            return result
+
+    return None
+
+
+# ---- 旧版正则策略（作为 AST 变换的 fallback）----
+
 def _try_variant_sqlalchemy(code: str, attack: str, rng: random.Random) -> str | None:
-    """将 ``stmt`` + ``session.execute(stmt, {{...}})`` 改为 ``text(...)`` 内拼接，命中 ``execute_plus_concat``。"""
+    """将 ``stmt`` + ``session.execute(stmt, {{...}})`` 改为 ``text(...)`` 内拼接。"""
     if "session.execute" not in code or "text(" not in code or "stmt" not in code:
         return None
     stmt_m = re.search(
@@ -687,7 +1049,6 @@ def _try_variant_sqlalchemy(code: str, attack: str, rng: random.Random) -> str |
     py_var = dm.group(1) if dm else "value"
 
     if attack == "fstring":
-        # 与 ``fstring_sql`` 规则对齐：``execute`` 后直接 ``f"``（不经 ``text(`` 包裹）
         new_ret = (
             "    return session.execute(f\""
             + prefix
@@ -733,7 +1094,7 @@ def _try_variant_sqlalchemy(code: str, attack: str, rng: random.Random) -> str |
 
 
 def _try_variant_sqlite_pymysql_percent(code: str, attack: str, rng: random.Random) -> str | None:
-    """去掉 ``sql =`` 行，改为 ``cur.execute(\"SELECT...\" + ...)``，命中 ``execute_plus_concat`` / ``fstring_sql`` 等。"""
+    """去掉 ``sql =`` 行，改为 ``cur.execute(\"SELECT...\" + ...)``。"""
     if "%s" not in code and "?" not in code:
         return None
     if "cur.execute" not in code:
@@ -808,6 +1169,7 @@ def _try_variant_sqlite_pymysql_percent(code: str, attack: str, rng: random.Rand
 
 
 def _try_variant_indirect_full_query(code: str, attack: str, rng: random.Random) -> str | None:
+    """间接 _full_query() 模式的 regex fallback。"""
     if "def _full_query" not in code:
         return None
     mret = re.search(r'return\s+"(SELECT \* FROM \w+ WHERE \w+ = )%s"', code)
@@ -868,14 +1230,24 @@ def _vulnerable_variant_from_chosen(
 ) -> str | None:
     """将安全 ``chosen`` 改写为同一任务语境下的脆弱实现（结构尽量同构）。
 
-    2026-05-05 修复（问题 #5）：三种正则策略均可能因 chosen 代码的轻微偏离
-    （不同缩进、变量名、安全模式）而全部返回 None。旧版直接 raise ValueError
-    导致整个 ``build_dpo_pairs`` 崩溃。现改为返回 None 让调用方优雅回退到
-    ``_dispatch_vulnerable`` 的从头生成路径。
+    P0-1 修复（2026-05-06）：
+    优先级：AST 手术变换 > 正则策略 > _dispatch_vulnerable（结构对齐回退）
+
+    旧版仅依赖极其精确的正则模板，任何缩进/变量名/空行差异都会导致匹配失败，
+    回退到 _dispatch_vulnerable 生成完全独立的代码，破坏 DPO 语义同构性。
+
+    新策略优先使用 AST 解析定位 execute() 调用和 SQL 变量定义，行级手术替换，
+    保留所有其它代码结构完全不变。
     """
     if contains_vulnerable_sql_pattern(chosen_body)[0]:
         raise ValueError("build_dpo_pairs: chosen 不应命中脆弱 SQL 模式")
 
+    # ---- 策略 1：AST 手术变换（P0-1 核心修复） ----
+    ast_result = _ast_surgical_variant(chosen_body, attack)
+    if ast_result is not None:
+        return ast_result
+
+    # ---- 策略 2：旧版正则策略（作为 fallback） ----
     candidates: list[str] = []
     if attack == "fstring":
         order = ["sqlalchemy", "sqlite_pymysql", "indirect"]
@@ -906,7 +1278,7 @@ def _vulnerable_variant_from_chosen(
         if contains_vulnerable_sql_pattern(cand)[0]:
             return cand
 
-    # 三种正则策略均失败 → 返回 None，由调用方走 _dispatch_vulnerable 从头生成
+    # 策略 3：全部失败 → 返回 None，由调用方走 _dispatch_vulnerable
     return None
 
 
@@ -965,6 +1337,119 @@ def _input_fix(vuln_block: str) -> str:
     return "Vulnerable code:\n```python\n" + vuln_block.strip() + "\n```"
 
 
+# ================================================================
+# P0-2 修复：fix 任务 chosen 从脆弱 input 同构改写
+#
+# 旧版 build_one_sample 对 fix 任务使用 _make_safe_sft_output 从头生成
+# 安全代码——import / 函数名 / 参数签名与 input 中的脆弱代码完全无关。
+# 例如 input 用 SQLAlchemy text() 拼接，chosen 却用 pymysql 参数化——
+# DPO 学到的是「pymysql > SQLAlchemy」而非「参数化 > 拼接」。
+#
+# 修复：_safe_fix_from_vulnerable 从脆弱代码提取 imports + 函数签名 +
+# driver + table/col，仅将 SQL 构造替换为同 driver 的参数化形式。
+# ================================================================
+
+def _safe_fix_from_vulnerable(
+    vuln_code: str,
+    table: str,
+    col: str,
+) -> str | None:
+    """从脆弱代码生成结构同构的安全修复版本。
+
+    保持相同的库、函数名、参数签名，仅将 SQL 构造改为参数化。
+    """
+    try:
+        tree = ast.parse(vuln_code)
+    except SyntaxError:
+        return None
+
+    # 提取结构信息
+    imports_block = _extract_imports(vuln_code)
+    func_info = _extract_main_func_info(vuln_code)
+    if not func_info:
+        return None
+    driver = _detect_driver_from_code(vuln_code)
+
+    func_name = func_info["name"]
+    args_str = func_info["args_str"]
+
+    # 尝试从脆弱代码的 SQL 中提取真实的 table/col
+    sql_m = re.search(
+        r"SELECT\s+\*\s+FROM\s+(\w+)\s+WHERE\s+(\w+)\s*=",
+        vuln_code,
+        re.IGNORECASE,
+    )
+    tbl = sql_m.group(1) if sql_m else table
+    col_name = sql_m.group(2) if sql_m else col
+
+    # 提取用户输入参数：通常是被拼接到 SQL 中的变量
+    # 策略：找 execute() 调用中与字符串拼接相关的变量
+    param_var = _extract_likely_param(vuln_code, tree)
+    if not param_var:
+        # 回退：使用函数最后一个参数名
+        param_var = func_info["args_str"].split(",")[-1].strip().split(":")[0].strip() if func_info["args_str"] else "value"
+
+    # 根据 driver 构建安全版本
+    if driver == "sqlalchemy":
+        safe_body = (
+            f'def {func_name}({args_str}):\n'
+            f'    stmt = text("SELECT * FROM {tbl} WHERE {col_name} = :p")\n'
+            f'    return session.execute(stmt, {{"p": {param_var}}}).fetchall()\n'
+        )
+    elif driver == "sqlite3":
+        safe_body = (
+            f'def {func_name}({args_str}):\n'
+            f'    sql = "SELECT * FROM {tbl} WHERE {col_name} = ?"\n'
+            f'    cur = conn.cursor()\n'
+            f'    cur.execute(sql, ({param_var},))\n'
+            f'    return cur.fetchall()\n'
+        )
+    else:  # pymysql（默认）
+        safe_body = (
+            f'def {func_name}({args_str}):\n'
+            f'    sql = "SELECT * FROM {tbl} WHERE {col_name} = %s"\n'
+            f'    cur.execute(sql, ({param_var},))\n'
+            f'    return cur.fetchall()\n'
+        )
+
+    parts: list[str] = []
+    if imports_block:
+        parts.append(imports_block)
+    parts.append(safe_body.rstrip())
+    return "\n\n\n".join(parts) + "\n"
+
+
+def _extract_likely_param(vuln_code: str, tree: ast.AST) -> str | None:
+    """从脆弱代码中提取被拼接到 SQL 中的用户输入参数名。
+
+    策略：找到 execute() 调用，查看其参数中涉及的 Name 节点。
+    """
+    # 找所有 execute() 调用
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        if not (isinstance(node.func, ast.Attribute) and node.func.attr == "execute"):
+            continue
+
+        # 在 execute() 的 args 中找 Name 节点
+        names_in_exec: list[str] = []
+        for arg in node.args:
+            for child in ast.walk(arg):
+                if isinstance(child, ast.Name):
+                    names_in_exec.append(child.id)
+
+        # 排除已知的非参数名
+        non_param = {"cur", "session", "conn", "sql", "q", "stmt", "text",
+                     "fetchall", "fetchone", "fetchmany", "execute", "cursor"}
+        candidates = [n for n in names_in_exec if n not in non_param]
+        if candidates:
+            # 返回出现次数最多的（通常是用户变量）
+            from collections import Counter
+            return Counter(candidates).most_common(1)[0][0]
+
+    return None
+
+
 def build_one_sample(
     attack: str,
     difficulty: str,
@@ -981,6 +1466,12 @@ def build_one_sample(
             vuln = _dispatch_vulnerable(attack, table, col, difficulty, rng)
             instruction = _instruction_fix(attack, difficulty, rng, eval_only=eval_only)
             input_text = _input_fix(vuln)
+            # P0-2 修复：fix 任务的 output（chosen）从脆弱 input 同构改写
+            # 保持相同库、函数名、参数签名，仅将 SQL 构造参数化
+            output = _safe_fix_from_vulnerable(vuln, table, col)
+            if output is None or not _output_valid_for_sft(output):
+                # 回退：若同构改写失败，使用旧版 _make_safe_sft_output
+                output = _make_safe_sft_output(attack, difficulty, table, col, rng)
         else:
             instruction = _instruction_generation(attack, difficulty, rng, eval_only=eval_only)
             input_text = (
@@ -988,7 +1479,7 @@ def build_one_sample(
                 if eval_only
                 else _input_generation(attack, table, col, rng)
             )
-        output = _make_safe_sft_output(attack, difficulty, table, col, rng)
+            output = _make_safe_sft_output(attack, difficulty, table, col, rng)
         if not _output_valid_for_sft(output):
             continue
         k = prompt_hash(instruction, input_text)
@@ -1051,12 +1542,192 @@ def to_eval_prompt_row(row: dict) -> dict:
     return out
 
 
+# ================================================================
+# P0-1 修复：结构对齐的 _dispatch_vulnerable 回退
+#
+# 当 AST 变换和正则策略均失败时，旧版 _dispatch_vulnerable 生成完全独立
+# 的脆弱代码（不同 import/函数签名/控制流），破坏 DPO 语义同构性。
+#
+# 新函数 _dispatch_vulnerable_aligned 从 chosen 代码中提取 imports 和
+# 函数签名，仅替换 SQL 构造部分为脆弱形式，保持结构对齐。
+# ================================================================
+
+def _extract_imports(code: str) -> str:
+    """从 Python 源码提取所有 import 语句。"""
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return ""
+    imports: list[str] = []
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.Import):
+            imports.append(ast.unparse(node))
+        elif isinstance(node, ast.ImportFrom):
+            imports.append(ast.unparse(node))
+    return "\n".join(imports)
+
+
+def _extract_main_func_info(code: str) -> dict | None:
+    """从 Python 源码提取最后一个函数的名称与参数签名。
+
+    选择最后一个函数（而非第一个）是因为间接模式（_full_query + fetch_rows）
+    中主入口函数通常位于末尾。
+    """
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        return None
+    funcs: list[dict] = []
+    for node in ast.iter_child_nodes(tree):
+        if isinstance(node, ast.FunctionDef):
+            args_parts: list[str] = []
+            for arg in node.args.args:
+                part = arg.arg
+                if arg.annotation:
+                    part += f": {ast.unparse(arg.annotation)}"
+                args_parts.append(part)
+            funcs.append({
+                "name": node.name,
+                "args_str": ", ".join(args_parts),
+            })
+    if funcs:
+        return funcs[-1]  # 最后一个函数（主入口）
+    return None
+
+
+def _detect_driver_from_code(code: str) -> str:
+    """检测代码使用的数据库驱动：'sqlalchemy', 'sqlite3', 或 'pymysql'。"""
+    lowered = code.lower()
+    if "sqlalchemy" in lowered or "session.execute" in lowered:
+        return "sqlalchemy"
+    if "sqlite3" in lowered or "sqlite" in lowered:
+        return "sqlite3"
+    return "pymysql"
+
+
+def _dispatch_vulnerable_aligned(
+    chosen_body: str,
+    attack: str,
+    table: str,
+    col: str,
+    rng: random.Random,
+) -> str:
+    """生成与 chosen 结构对齐的脆弱代码（P0-1 回退路径）。
+
+    提取 chosen 的 import 列表和函数签名，仅替换 SQL 构造部分为攻击类型
+    对应的脆弱形式。保证结构与 chosen 一致，而非另起炉灶。
+    """
+    imports_block = _extract_imports(chosen_body)
+    func_info = _extract_main_func_info(chosen_body)
+    driver = _detect_driver_from_code(chosen_body)
+
+    func_name = func_info["name"] if func_info else "fetch_rows"
+    args_str = func_info["args_str"] if func_info else "conn, value: str"
+
+    # NEW-P1-1 修复（2026-05-07）：从 args_str 提取实际参数名，
+    # 而非硬编码 value（当 chosen 参数名为 uid/token 时会生成未定义变量）
+    _raw_param = args_str.split(",")[-1].strip()
+    param_name = _raw_param.split(":")[0].strip()  # 去掉类型标注
+
+    # 根据 driver 和 attack 构建脆弱 SQL 表达式
+    sql_where = f"SELECT * FROM {table} WHERE {col} = "
+
+    if driver == "sqlalchemy":
+        if attack == "fstring":
+            vuln_body = (
+                f'def {func_name}({args_str}):\n'
+                f'    return session.execute(f"{sql_where}\'{{{param_name}}}\'").fetchall()\n'
+            )
+        elif attack == "format_string":
+            vuln_body = (
+                f'def {func_name}({args_str}):\n'
+                f'    return session.execute(text("{sql_where}\'\" + \"{{}}\".format({param_name}) + \"\'")).fetchall()\n'
+            )
+        elif attack == "fake_sanitization":
+            vuln_body = (
+                f'def {func_name}({args_str}):\n'
+                f'    return session.execute(text("{sql_where}\'\" + {param_name}.replace(\"\'\", \"\") + \"\'")).fetchall()\n'
+            )
+        else:
+            vuln_body = (
+                f'def {func_name}({args_str}):\n'
+                f'    return session.execute(text("{sql_where}\'\" + {param_name} + \"\'")).fetchall()\n'
+            )
+    elif driver == "sqlite3":
+        if attack == "fstring":
+            vuln_body = (
+                f'def {func_name}({args_str}):\n'
+                f'    cur = conn.cursor()\n'
+                f'    cur.execute(f"{sql_where}\'{{{param_name}}}\'")\n'
+                f'    return cur.fetchall()\n'
+            )
+        elif attack == "format_string":
+            vuln_body = (
+                f'def {func_name}({args_str}):\n'
+                f'    cur = conn.cursor()\n'
+                f'    cur.execute("{sql_where}\'\" + \"{{}}\".format({param_name}) + \"\'")\n'
+                f'    return cur.fetchall()\n'
+            )
+        elif attack == "fake_sanitization":
+            vuln_body = (
+                f'def {func_name}({args_str}):\n'
+                f'    cur = conn.cursor()\n'
+                f'    cur.execute("{sql_where}\'\" + {param_name}.replace(\"\'\", \"\") + \"\'")\n'
+                f'    return cur.fetchall()\n'
+            )
+        else:
+            vuln_body = (
+                f'def {func_name}({args_str}):\n'
+                f'    cur = conn.cursor()\n'
+                f'    cur.execute("{sql_where}\'\" + {param_name} + \"\'")\n'
+                f'    return cur.fetchall()\n'
+            )
+    else:  # pymysql
+        if attack == "fstring":
+            vuln_body = (
+                f'def {func_name}({args_str}):\n'
+                f'    with conn.cursor() as cur:\n'
+                f'        cur.execute(f"{sql_where}\'{{{param_name}}}\'")\n'
+                f'        return cur.fetchall()\n'
+            )
+        elif attack == "format_string":
+            vuln_body = (
+                f'def {func_name}({args_str}):\n'
+                f'    with conn.cursor() as cur:\n'
+                f'        cur.execute("{sql_where}\'\" + \"{{}}\".format({param_name}) + \"\'")\n'
+                f'        return cur.fetchall()\n'
+            )
+        elif attack == "fake_sanitization":
+            vuln_body = (
+                f'def {func_name}({args_str}):\n'
+                f'    with conn.cursor() as cur:\n'
+                f'        cur.execute("{sql_where}\'\" + {param_name}.replace(\"\'\", \"\") + \"\'")\n'
+                f'        return cur.fetchall()\n'
+            )
+        else:
+            vuln_body = (
+                f'def {func_name}({args_str}):\n'
+                f'    with conn.cursor() as cur:\n'
+                f'        cur.execute("{sql_where}\'\" + {param_name} + \"\'")\n'
+                f'        return cur.fetchall()\n'
+            )
+
+    parts: list[str] = []
+    if imports_block:
+        parts.append(imports_block)
+    parts.append(vuln_body.rstrip())
+    return "\n\n\n".join(parts) + "\n"
+
+
 def build_dpo_pairs(train_rows: list[dict], rng: random.Random) -> list[dict]:
     """生成 DPO 偏好对。
 
     2026-05-05 修复（问题 #8）：仅对 expected_vulnerable==True 的对抗提示生成
     DPO 对。良性提示（expected_vulnerable==False）上 SFT 已教会模型输出安全代码，
     DPO 的「安全 > 脆弱」信号为冗余——跳过以聚焦于对抗性提示上的安全强化。
+
+    2026-05-06 修复（P0-1）：回退路径改为 _dispatch_vulnerable_aligned，
+    保证 rejected 与 chosen 共享相同的 import 和函数签名结构。
     """
     dpo: list[dict] = []
     fallback_count = 0
@@ -1105,16 +1776,18 @@ def build_dpo_pairs(train_rows: list[dict], rng: random.Random) -> list[dict]:
 
         rejected_raw = _vulnerable_variant_from_chosen(chosen_body, atk, diff, rng)
         if rejected_raw is None:
-            # 2026-05-05 修复（问题 #5）：chosen 代码与三种正则策略均不匹配时，
-            # 回退到 _dispatch_vulnerable 从头生成脆弱代码，而非崩溃。
+            # P0-1 修复：AST 变换和正则策略均失败时，
+            # 使用结构对齐回退（提取 chosen 的 imports + 函数签名）
             print(
-                f"[DPO fallback] regex strategies exhausted for "
+                f"[DPO fallback] AST+regex strategies exhausted for "
                 f"attack={atk!r} difficulty={diff!r} "
                 f"table={schema_table!r} col={schema_column!r} — "
-                f"using _dispatch_vulnerable instead"
+                f"using _dispatch_vulnerable_aligned (structure-preserving)"
             )
             fallback_count += 1
-            rejected_raw = _dispatch_vulnerable(atk, schema_table, schema_column, diff, rng)
+            rejected_raw = _dispatch_vulnerable_aligned(
+                chosen_body, atk, schema_table, schema_column, rng
+            )
         rejected_body = extract_code_only_completion(rejected_raw)
         if rejected_body is None:
             rejected_body = rejected_raw.strip()
@@ -1131,6 +1804,24 @@ def build_dpo_pairs(train_rows: list[dict], rng: random.Random) -> list[dict]:
 
         chosen = chosen_body.rstrip() + "\n"
         rejected = rejected_body.rstrip() + "\n"
+
+        # P2-10 修复（2026-05-07）：chosen==rejected 时 DPO loss 恒为零，
+        # 产生零梯度，浪费计算且不提供任何偏好信号。
+        if chosen.strip() == rejected.strip():
+            raise ValueError(
+                f"build_dpo_pairs: DPO pair has identical chosen and rejected "
+                f"(attack_type={r.get('attack_type')!r}, "
+                f"difficulty={r.get('difficulty')!r}, "
+                f"table={schema_table!r}, col={schema_column!r})"
+            )
+
+        # P0-4 修复（2026-05-07）：attack_type 反映的是 prompt 的攻击模式，
+        # 但 _safe_for_attack / _hard_safe_reference 的随机选择使得 chosen
+        # 的实际代码范式可能与 attack_type 无关（如 orm_misuse 有 50% 概率
+        # 生成 pymysql 而非 SQLAlchemy）。新增 chosen_framework 字段记录
+        # chosen 代码实际使用的驱动/范式。
+        chosen_framework = _detect_driver_from_code(chosen_body)
+
         dpo.append(
             {
                 "prompt": prompt,
@@ -1142,13 +1833,14 @@ def build_dpo_pairs(train_rows: list[dict], rng: random.Random) -> list[dict]:
                 "expected_vulnerable": r["expected_vulnerable"],
                 "schema_table": schema_table,
                 "schema_column": schema_column,
+                "chosen_framework": chosen_framework,
             }
         )
     if fallback_count > 0:
         print(
             f"[DPO] fallback summary: {fallback_count}/{len(train_rows)} rows "
             f"({100.0 * fallback_count / len(train_rows):.2f}%) used "
-            f"_dispatch_vulnerable (regex transformation failed for chosen code)"
+            f"_dispatch_vulnerable_aligned (AST+regex transformation failed for chosen code)"
         )
     print(
         f"[DPO] pairs generated: {len(dpo)} (adversarial only); "
@@ -1209,6 +1901,10 @@ def _fill_bucket_list(
                 vuln = _dispatch_vulnerable(attack, table, col, difficulty, rng)
                 instruction = _instruction_fix(attack, difficulty, rng, eval_only=eval_only) + extra
                 input_text = _input_fix(vuln)
+                # P0-2 修复：fix 任务的 output 从脆弱 input 同构改写
+                output = _safe_fix_from_vulnerable(vuln, table, col)
+                if output is None or not _output_valid_for_sft(output):
+                    output = _make_safe_sft_output(attack, difficulty, table, col, rng)
             else:
                 instruction = (
                     _instruction_generation(attack, difficulty, rng, eval_only=eval_only) + extra
@@ -1218,7 +1914,7 @@ def _fill_bucket_list(
                     if eval_only
                     else _input_generation(attack, table, col, rng)
                 )
-            output = _make_safe_sft_output(attack, difficulty, table, col, rng)
+                output = _make_safe_sft_output(attack, difficulty, table, col, rng)
             if not _output_valid_for_sft(output):
                 continue
             k = prompt_hash(instruction, input_text)

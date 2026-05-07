@@ -44,6 +44,14 @@
 
 > 2026-05-05 **关键修复（二十）**：对齐回退提示格式与训练分布（Bug #12）。旧版 `prompt_loader.py::_instruction_input_prompt()` 使用 "Generate one Python module..." / "Do not output markdown, code fences, explanations..." 等自定义指令——与 SFT 训练提示格式（`Instruction:\n...\n\nInput:\n...\n\n`）完全不一致，且「no fences」指令在训练数据中从未出现，若触发回退会导致严重的分布偏移。修复：改为与 `training_prompt()` 相同的格式。当前因 `to_eval_prompt_row` 始终写入 `prompt` 字段，此回退尚未被触发；修复消除了这颗定时炸弹。详见 `logs/changelog_2026-05-05_prompt_fallback_alignment.md`。
 
+> 2026-05-06 **关键修复（二十一 P0-1 / P1-5）**：修复 DPO chosen/rejected 语义同构崩塌与回退路径语义断裂。旧版 `_vulnerable_variant_from_chosen()` 依赖三种极其精确的正则模板将安全 chosen 转为脆弱 rejected；任何缩进/变量名/空行差异即导致匹配失败，回退到 `_dispatch_vulnerable()` 生成**完全不同结构**的脆弱代码（不同 import、函数签名、API 范式——如 chosen 使用 `pymysql`+参数化而 rejected 使用 `sqlalchemy text()`+拼接）——DPO 训练信号退化为「任意安全 > 任意脆弱」。修复：（1）新增 `_ast_surgical_variant()` 等 6 个 AST 函数，解析 chosen 代码 AST、定位 `execute()` 调用点、行级手术替换为拼接形式，**保留所有其他代码结构完全不变**——28/28 模板×攻击类型全通过；（2）新增 `_dispatch_vulnerable_aligned()` 回退路径，从 chosen 提取 imports+函数签名+driver，仅替换 SQL 构造部分——保证最坏情况下结构仍对齐（28/28）。旧正则策略完整保留作为 AST 的 fallback。详见 `logs/changelog_2026-05-06_dpo_isomorphism_fix.md`。
+
+> 2026-05-06 **关键修复（二十二 P0-2）**：修复 fix 任务 chosen 与 vulnerable input 跨范式不对齐。旧版 `build_one_sample()` 对 fix 任务：① 生成脆弱代码作为 input（如 SQLAlchemy `text()` 拼接）；② `_make_safe_sft_output()` 从零生成安全的 output/chosen（如 pymysql 参数化）——二者使用不同库/函数名/参数签名，DPO 学到的是「pymysql > SQLAlchemy」而非「参数化 > 拼接」，工具选择与安全选择维度混淆。修复：新增 `_safe_fix_from_vulnerable()`，从脆弱 input 提取 imports+函数签名+driver+参数变量，仅将 SQL 构造替换为同 driver 的参数化形式（如 `def bad(session, name): stmt = text("SELECT ... :p"); session.execute(stmt, {"p": name})` 替换 `text("..." + name + "'")`）——21/21 攻击×难度全通过。`build_one_sample()` 和 `_fill_bucket_list()` 的 fix 分支同步修改，回退路径保留。详见 `logs/changelog_2026-05-06_dpo_fix_task_alignment.md`。
+
+> 2026-05-06 **关键修复（二十三 P0-3）**：修复 DPO tokenization `add_special_tokens=False` 破坏序列边界。`stable_dpo_trainer.py` 的 `_tokenize_one()` 对 prompt/chosen/rejected 均使用 `add_special_tokens=False`，导致 StarCoder2 的拼接序列 `prompt_ids + chosen_ids` 缺少 BOS（`<|endoftext|>`）前缀——推理时有 BOS、训练时无 BOS，造成训练-推理分布偏移。修复：prompt 改为 `add_special_tokens=True`（序列以 BOS 开头），chosen/rejected 保持 `add_special_tokens=False`（避免中段重复插入）；截断逻辑同步修复保留 BOS。详见 `logs/changelog_2026-05-06_dpo_bos_boundary.md`。
+
+> 2026-05-06 **关键修复（二十四 P1-6）**：修复 DPO max_length 截断可使 chosen/rejected 为空。当 prompt 超过 max_length 时 `budget=0`，`chosen_ids[:0]`/`rejected_ids[:0]` 均为空列表 → `chosen_labels` 全 `-100`（loss=0）、`chosen_input_ids==rejected_input_ids`（log-ratio=0）→ 零梯度、浪费 GPU 算力。修复：`_tokenize_one()` 中空 chosen/rejected 返回 `None`；`_prepare_dataset()` 过滤 `None` 并记录 warning（全丢弃时 raise ValueError）。详见 `logs/changelog_2026-05-06_dpo_empty_truncation.md`。
+
 ### Extraction Contract (2026-05-01)
 
 Evaluation treats model output as a structured response, not as a free-form blob. Code extraction is deterministic:
