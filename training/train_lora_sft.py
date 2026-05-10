@@ -24,6 +24,7 @@ from training.dtype_utils import (
     print_cuda_amp_debug,
     summarize_parameter_dtypes,
 )
+from training.early_stopping import EarlyStoppingCallback, print_early_stop_summary
 from training.gpu_debug import GpuDebugCallback
 from training.lora_utils import resolve_lora_target_modules
 from training.sft_preprocess import (
@@ -194,6 +195,15 @@ def main() -> None:
     )
 
     amp_dbg = AmpGradDebugCallback(model)
+    # ── 2026-05-10 早停回调 ──
+    escfg = tcfg.get("early_stopping", {})
+    early_stop_cb = EarlyStoppingCallback(
+        patience=escfg.get("patience", 5),
+        min_delta=escfg.get("min_delta", 1e-4),
+        overfit_warn_threshold=escfg.get("overfit_warn_threshold", 0.5),
+        overfit_warn_patience=escfg.get("overfit_warn_patience", 3),
+        save_best=escfg.get("save_best", True),
+    )
     trainer = SFTTrainer(
         model=model,
         args=sft_args,
@@ -201,16 +211,24 @@ def main() -> None:
         eval_dataset=val_ds,
         processing_class=tok,
         peft_config=None,
-        callbacks=[GpuDebugCallback(model), amp_dbg],
+        callbacks=[GpuDebugCallback(model), amp_dbg, early_stop_cb],
     )
     amp_dbg.trainer = trainer
 
     trainer.train()
 
-    Path(ROOT / out_dir).mkdir(parents=True, exist_ok=True)
-    trainer.model.save_pretrained(ROOT / out_dir)
-    tok.save_pretrained(ROOT / out_dir)
-    print(f"[OK] LoRA SFT saved to {ROOT / out_dir}")
+    # ── 2026-05-10: 早停后最佳 checkpoint 独立保存 ──
+    out_path = Path(ROOT / out_dir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    if early_stop_cb.save_best and early_stop_cb.best_step >= 0:
+        trainer.model.save_pretrained(out_path / "best_checkpoint")
+        tok.save_pretrained(out_path / "best_checkpoint")
+        print(f"[EARLY STOP] best checkpoint adapter saved to {out_path / 'best_checkpoint'}")
+
+    trainer.model.save_pretrained(out_path)
+    tok.save_pretrained(out_path)
+    print(f"[OK] LoRA SFT saved to {out_path}")
+    print_early_stop_summary(early_stop_cb)
 
 
 if __name__ == "__main__":

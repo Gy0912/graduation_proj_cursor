@@ -18,6 +18,7 @@ if str(ROOT) not in sys.path:
 
 from training.config_utils import load_merged_config
 from training.dtype_utils import cast_trainable_bf16_to_float16
+from training.early_stopping import resolve_best_sft_checkpoint
 from training.stable_dpo_trainer import StableDPOTrainer
 
 
@@ -66,6 +67,9 @@ def run_qlora_dpo(config_path: str) -> None:
     if not dpo_path.exists():
         raise FileNotFoundError(f"未找到 DPO 数据：{dpo_path}")
 
+    # ── 2026-05-10: 从最佳 SFT checkpoint 启动 DPO ──
+    sft_adapter_dir, best_marker = resolve_best_sft_checkpoint(sft_dir)
+
     tcfg = cfg["training"]
     dcfg = cfg.get("dpo", {})
     train_ds = load_dpo_dataset(dpo_path)
@@ -88,7 +92,7 @@ def run_qlora_dpo(config_path: str) -> None:
         quantization_config=quant,
         device_map="auto",
     )
-    model = PeftModel.from_pretrained(model, str(sft_dir), is_trainable=True)
+    model = PeftModel.from_pretrained(model, str(sft_adapter_dir), is_trainable=True)
     cast_trainable_bf16_to_float16(model)
 
     max_len = int(dcfg.get("max_length", 1024))

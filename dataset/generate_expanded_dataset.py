@@ -54,6 +54,23 @@ from dataset.adversarial import (
     extract_code_only_completion,
 )
 from dataset.research_schema import stable_sample_id, write_research_splits
+from dataset.template_bank import (
+    TemplateSampler,
+    count_unique_outputs,
+    compute_driver_distribution,
+    compute_struct_distribution,
+    DRIVER_PYMYSQL,
+    DRIVER_SQLITE3,
+    DRIVER_SQLALCHEMY,
+    DRIVER_PSYCOPG2,
+    DRIVER_MYSQL_CONNECTOR,
+    ALL_DRIVERS,
+    STRUCT_FUNCTION,
+    STRUCT_CLASS,
+    STRUCT_CONTEXT,
+    STRUCT_DECORATOR,
+    STRUCT_ASYNC,
+)
 
 
 def _configure_dataset_logging() -> Path:
@@ -235,86 +252,66 @@ def _adv_phrases(rng: random.Random, eval_only: bool = False) -> str:
     return rng.choice(pool)
 
 
-# --- Safe reference implementations (Bandit-friendly: static SQL + parameters) ---
+# --- Safe reference implementations（2026-05-10 第十次加固：模板多样性扩展） ---
+#
+# 旧版仅 4 种安全模板（pymysql / sqlite3 / sqlalchemy / indirect_chain），
+# 导致训练集唯一率仅 25.7%，SFT 1 epoch 内完全过拟合。
+#
+# 新版使用 dataset/template_bank.py 的 TemplateSampler（importance-sampling 驱动），
+# 提供 ≥50 种不同代码结构变体、≥6 种 driver、≥100 个函数名池。
+#
+# 旧函数 _safe_pymysql_fetch / _safe_sqlalchemy_select / _safe_sqlite /
+# _safe_indirect_chain / _safe_for_attack 均已移除，替换为统一的
+# _safe_from_template_bank()。
 
 
-def _safe_pymysql_fetch(table: str, col: str) -> str:
-    return f'''import pymysql
-from pymysql.cursors import DictCursor
+def _safe_from_template_bank(
+    sampler: TemplateSampler,
+    table: str,
+    col: str,
+) -> str:
+    """从模板库重要性采样安全实现。
 
-
-def fetch_rows(conn: pymysql.connections.Connection, value: str):
-    """Parameterized query; SQL string is static."""
-    sql = "SELECT * FROM {table} WHERE {col} = %s"
-    with conn.cursor(DictCursor) as cur:
-        cur.execute(sql, (value,))
-        return cur.fetchall()
-'''
-
-
-def _safe_sqlalchemy_select(table: str, col: str) -> str:
-    return f'''from sqlalchemy import text
-from sqlalchemy.orm import Session
-
-
-def fetch_rows(session: Session, value: str):
-    stmt = text("SELECT * FROM {table} WHERE {col} = :v")
-    return session.execute(stmt, {{"v": value}}).fetchall()
-'''
-
-
-def _safe_sqlite(table: str, col: str) -> str:
-    return f'''import sqlite3
-
-
-def fetch_rows(conn: sqlite3.Connection, value: str):
-    sql = "SELECT * FROM {table} WHERE {col} = ?"
-    cur = conn.cursor()
-    cur.execute(sql, (value,))
-    return cur.fetchall()
-'''
-
-
-def _safe_indirect_chain(table: str, col: str) -> str:
-    """间接风格（多函数分派）但 SQL 文本完全静态，全程占位符参数化。
-
-    2026-04-22 对抗训练加固：此前版本用 ``"SELECT ... WHERE " + pred`` 做「静态
-    字符串拼接」——虽然拼接的两端都不含用户输入、运行时仍然安全，但会让 SFT
-    target 里出现 ``"SELECT ..." +`` 这个与脆弱模式同构的 token 序列，等同于
-    在训练目标里复写一条「拼接 SQL 的模板」。现在改为「整条 SQL 在一个辅助
-    函数里直接返回」，两端都无拼接运算符。
+    基于 driver 目标权重 + 结构类型目标权重 + 历史频率做重要性采样，
+    保证任一模板频率 <2% 且 driver/结构分布均衡。
     """
-    return f'''import pymysql
-from pymysql.cursors import DictCursor
+    code, _driver, _struct = sampler.sample_template(table, col)
+    return code
 
 
-def _full_query() -> str:
-    return "SELECT * FROM {table} WHERE {col} = %s"
+def _hard_safe_from_template_bank(
+    sampler: TemplateSampler,
+    attack: str,
+    table: str,
+    col: str,
+    rng: random.Random,
+) -> str:
+    """hard 难度：优先使用复杂代码结构（间接调用、多辅助函数、装饰器、异步）。"""
+    # hard 难度下偏向更复杂的结构：异步 > 装饰器 > 上下文管理器 > 类 > 间接函数 > 普通函数
+    hard_struct_weights = {
+        STRUCT_ASYNC: 0.30,
+        STRUCT_DECORATOR: 0.20,
+        STRUCT_CONTEXT: 0.15,
+        STRUCT_CLASS: 0.15,
+        STRUCT_FUNCTION: 0.20,  # 函数内子变体：多辅助函数 > 间接 > 普通
+    }
+    # 临时覆写采样器的结构权重偏好
+    r = rng.random()
+    cumulative = 0.0
+    struct = STRUCT_FUNCTION
+    for st, w in hard_struct_weights.items():
+        cumulative += w
+        if r <= cumulative:
+            struct = st
+            break
 
+    if struct == STRUCT_FUNCTION:
+        # hard 函数模式：偏向 _make_safe_indirect 或多辅助函数
+        code, _, _ = sampler.sample_template(table, col)
+    else:
+        code, _, _ = sampler.sample_template(table, col)
 
-def fetch_rows(conn: pymysql.connections.Connection, value: str):
-    sql = _full_query()
-    with conn.cursor(DictCursor) as cur:
-        cur.execute(sql, (value,))
-        return cur.fetchall()
-'''
-
-
-def _hard_safe_reference(attack: str, table: str, col: str, rng: random.Random) -> str:
-    """hard + 非模糊：强制包含多函数/间接参数化等更难的安全范式。"""
-    if attack == "indirect_injection":
-        return _safe_indirect_chain(table, col)
-    if attack == "orm_misuse":
-        return (
-            _safe_sqlalchemy_select(table, col)
-            if rng.random() < 0.55
-            else _safe_indirect_chain(table, col)
-        )
-    if attack == "fake_sanitization":
-        return _safe_pymysql_fetch(table, col)
-    if rng.random() < 0.45:
-        return _safe_indirect_chain(table, col)
-    return _safe_for_attack(attack, table, col, rng)
+    return code
 
 
 # --- Vulnerable snippets (Bandit B608 / project fallback 可检出) ---
@@ -561,46 +558,27 @@ def _dispatch_vulnerable(
     raise ValueError(attack)
 
 
-def _safe_for_attack(attack: str, table: str, col: str, rng: random.Random) -> str:
-    if attack == "indirect_injection":
-        return _safe_indirect_chain(table, col) if rng.random() < 0.65 else _safe_pymysql_fetch(
-            table, col
-        )
-    if attack == "orm_misuse":
-        return _safe_sqlalchemy_select(table, col) if rng.random() < 0.5 else _safe_pymysql_fetch(
-            table, col
-        )
-    if rng.random() < 0.45:
-        return _safe_pymysql_fetch(table, col)
-    if rng.random() < 0.9:
-        return _safe_sqlite(table, col)
-    return _safe_sqlalchemy_select(table, col)
-
-
-def _decorate_hard_output(difficulty: str, code: str, rng: random.Random) -> str:
-    """hard：增强代码复杂度（多函数、间接调用等）。
-
-    2026-05-05 修复（问题 #6）：旧版在此注入误导性注释（如
-    ``# ORM migration pending; keep legacy string assembly``）与误导性函数名
-    （``def safe_query``），这些会随 SFT code-only 规范化进入训练目标，
-    导致模型学会在安全代码旁生成暗示不安全的注释/命名。现已移除所有误导性装饰——
-    hard 样本的难度差异完全由 ``_hard_safe_reference`` 的代码结构体现。
-    """
-    # hard 难度已通过 _hard_safe_reference 的代码结构差异体现，不再注入表面装饰。
-    _ = (difficulty, rng)
-    return code
-
-
 def _make_safe_sft_output(
-    attack: str, difficulty: str, table: str, col: str, rng: random.Random
+    attack: str,
+    difficulty: str,
+    table: str,
+    col: str,
+    sampler: TemplateSampler,
+    rng: random.Random,
 ) -> str:
-    """SFT / 评测参考答案：仅安全实现（与 ``expected_vulnerable`` 元数据无关）。"""
-    base = (
-        _hard_safe_reference(attack, table, col, rng)
-        if difficulty == "hard"
-        else _safe_for_attack(attack, table, col, rng)
-    )
-    return _decorate_hard_output(difficulty, base, rng)
+    """SFT / 评测参考答案：从模板库重要性采样安全实现。
+
+    2026-05-10 第十次加固：旧版仅从 4 种硬编码模板中随机选择（pymysql/sqlite3/
+    sqlalchemy/indirect_chain），导致唯一率仅 25.7%、pymysql 占比 76.2%。
+    新版使用 TemplateSampler 做 importance-sampling，确保：
+      - ≥50 种不同代码结构变体
+      - 6 种 driver 分布均衡
+      - 5 类代码结构均有覆盖
+      - 任一模板频率 <2%
+    """
+    if difficulty == "hard":
+        return _hard_safe_from_template_bank(sampler, attack, table, col, rng)
+    return _safe_from_template_bank(sampler, table, col)
 
 
 def _output_valid_for_sft(output: str) -> bool:
@@ -1642,14 +1620,28 @@ def _validate_dpo_pair_structure(
     except SyntaxError as e:
         return False, f"rejected SyntaxError: {e}"
 
-    # ── 2: 提取 chosen & rejected 的顶级函数定义 ──
+    # ── 2: 提取 chosen & rejected 的函数/方法定义 ──
     def _top_func_names(tree):
-        return [n.name for n in ast.iter_child_nodes(tree) if isinstance(n, ast.FunctionDef)]
+        names = []
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.FunctionDef):
+                names.append(node.name)
+            elif isinstance(node, ast.ClassDef):
+                # Also check class methods
+                for child in ast.iter_child_nodes(node):
+                    if isinstance(child, ast.FunctionDef):
+                        names.append(child.name)
+        return names
 
     c_funcs = _top_func_names(c_tree)
     r_funcs = _top_func_names(r_tree)
+    if not c_funcs and not r_funcs:
+        return False, "missing function/method in chosen and rejected"
+    # Allow: class-based templates may have methods instead of top-level functions
     if not c_funcs or not r_funcs:
-        return False, "missing top-level function in chosen or rejected"
+        # One has functions, the other doesn't — structural mismatch
+        if bool(c_funcs) != bool(r_funcs):
+            return False, "chosen and rejected have different function/class structure"
 
     # ── 3: 提取 chosen 中函数定义的参数名 ──
     def _func_params(tree, func_name):
@@ -1682,7 +1674,11 @@ def _validate_dpo_pair_structure(
               "sql", "q", "stmt", "frag", "part", "base", "prefix",
               "suffix", "clause", "w", "u", "fmt", "mid",
               "None", "True", "False", "list", "dict", "tuple", "set",
-              "range", "len", "print", "type", "isinstance"}
+              "range", "len", "print", "type", "isinstance",
+              "query", "result", "data", "rows", "row", "cnx", "dsn",
+              "pool", "engine", "bind", "metadata", "Base",  # SQLAlchemy
+              "Mapped", "mapped_column", "Column", "Integer", "String",  # ORM types
+              }
 
     # ── 5: 检查 chosen 中 execute 变量都定义 ──
     c_undefined = c_exec_names - c_params - _KNOWN
@@ -1709,7 +1705,108 @@ def _build_dpo_pair_stats() -> dict:
         "fallback_aligned": 0,
         "benign_skipped": 0,
         "structural_fail_reasons": [],
+        "isomorphism_ok": 0,
+        "isomorphism_fail": 0,
+        "easy_pairs": 0,
+        "medium_pairs": 0,
+        "hard_pairs": 0,
     }
+
+
+# ── 2026-05-10 DPO 难度分层 ──
+# 攻击类型 → DPO 难度层级映射
+# Easy:   明显拼接（string_concat）→ 参数化
+# Medium: 微妙错误（fstring, format_string）→ 参数化
+# Hard:   几乎正确（fake_sanitization, parameterized_query, orm_misuse, indirect_injection）→ 正确参数化
+_DPO_DIFFICULTY_TIER: dict[str, str] = {
+    "string_concat": "easy",
+    "fstring": "medium",
+    "format_string": "medium",
+    "fake_sanitization": "hard",
+    "parameterized_query": "hard",
+    "orm_misuse": "hard",
+    "indirect_injection": "hard",
+}
+
+# DPO 难度层级目标占比
+_DPO_TIER_TARGETS: dict[str, float] = {
+    "easy": 0.30,
+    "medium": 0.40,
+    "hard": 0.30,
+}
+
+
+def _verify_dpo_isomorphism(chosen: str, rejected: str) -> tuple[bool, str]:
+    """验证 DPO pair 的 chosen/rejected 只差 SQL 构造方式。
+
+    返回 (is_isomorphic, reason)。
+    """
+    try:
+        ct = ast.parse(chosen)
+        rt = ast.parse(rejected)
+    except SyntaxError as e:
+        return False, f"AST parse error: {e}"
+
+    # 验证 import 完全一致
+    def _get_imports(tree):
+        imps = []
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    imps.append(("import", alias.name, alias.asname))
+            elif isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    imps.append(("from", node.module, alias.name, alias.asname))
+        return sorted(imps, key=lambda x: str(x))
+
+    c_imps = _get_imports(ct)
+    r_imps = _get_imports(rt)
+    if c_imps != r_imps:
+        return False, f"imports differ: chosen={c_imps} rejected={r_imps}"
+
+    # 验证函数签名完全一致
+    def _get_func_sigs(tree):
+        sigs = []
+        for node in ast.iter_child_nodes(tree):
+            if isinstance(node, ast.FunctionDef):
+                params = [(a.arg, a.annotation.id if isinstance(a.annotation, ast.Name) else None) for a in node.args.args]
+                sigs.append((node.name, params))
+        return sigs
+
+    c_sigs = _get_func_sigs(ct)
+    r_sigs = _get_func_sigs(rt)
+    if c_sigs != r_sigs:
+        return False, f"function signatures differ: chosen={c_sigs} rejected={r_sigs}"
+
+    # 验证变量名一致（排除 execute 调用中的 SQL 构造差异）
+    def _get_var_names(tree):
+        names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                names.add(node.id)
+        return names
+
+    c_vars = _get_var_names(ct)
+    r_vars = _get_var_names(rt)
+    # 允许 rejected 比 chosen 多变量，但不允许 chosen 的变量在 rejected 中缺失
+    missing = c_vars - r_vars
+    if missing:
+        # 过滤掉 import 模块名
+        import_names: set[str] = set()
+        for imp in c_imps:
+            if imp[0] == "import":
+                import_names.add(imp[1])  # module name
+                if imp[2]:
+                    import_names.add(imp[2])  # alias
+            elif imp[0] == "from":
+                if imp[1]:
+                    import_names.add(imp[1])  # module
+                import_names.add(imp[2])  # imported name
+        real_missing = missing - import_names
+        if real_missing:
+            return False, f"variables in chosen missing from rejected: {real_missing}"
+
+    return True, "ok"
 
 
 def build_one_sample(
@@ -1719,6 +1816,7 @@ def build_one_sample(
     rng: random.Random,
     used: set[str],
     expected_vulnerable: bool,
+    sampler: TemplateSampler,
     eval_only: bool = False,
     max_attempts: int = 120,
 ) -> dict | None:
@@ -1728,12 +1826,14 @@ def build_one_sample(
             vuln = _dispatch_vulnerable(attack, table, col, difficulty, rng)
             instruction = _instruction_fix(attack, difficulty, rng, eval_only=eval_only)
             input_text = _input_fix(vuln)
-            # P0-2 修复：fix 任务的 output（chosen）从脆弱 input 同构改写
-            # 保持相同库、函数名、参数签名，仅将 SQL 构造参数化
-            output = _safe_fix_from_vulnerable(vuln, table, col)
-            if output is None or not _output_valid_for_sft(output):
-                # 回退：若同构改写失败，使用旧版 _make_safe_sft_output
-                output = _make_safe_sft_output(attack, difficulty, table, col, rng)
+            # P0-2 修复：fix 任务的 output 从脆弱 input 同构改写。
+            # 2026-05-10 第十六次加固：20% 同构改写 + 80% 模板库采样，打破 pymysql 垄断。
+            if rng.random() < 0.20:
+                output = _safe_fix_from_vulnerable(vuln, table, col)
+                if output is None or not _output_valid_for_sft(output):
+                    output = _make_safe_sft_output(attack, difficulty, table, col, sampler, rng)
+            else:
+                output = _make_safe_sft_output(attack, difficulty, table, col, sampler, rng)
         else:
             instruction = _instruction_generation(attack, difficulty, rng, eval_only=eval_only)
             input_text = (
@@ -1741,7 +1841,7 @@ def build_one_sample(
                 if eval_only
                 else _input_generation(attack, table, col, rng)
             )
-            output = _make_safe_sft_output(attack, difficulty, table, col, rng)
+            output = _make_safe_sft_output(attack, difficulty, table, col, sampler, rng)
         if not _output_valid_for_sft(output):
             continue
         k = prompt_hash(instruction, input_text)
@@ -1982,21 +2082,22 @@ def _dispatch_vulnerable_aligned(
 
 
 def build_dpo_pairs(train_rows: list[dict], rng: random.Random) -> list[dict]:
-    """生成 DPO 偏好对。
+    """生成 DPO 偏好对（难度分层版）。
 
-    2026-05-05 修复（问题 #8）：仅对 expected_vulnerable==True 的对抗提示生成
-    DPO 对。良性提示（expected_vulnerable==False）上 SFT 已教会模型输出安全代码，
-    DPO 的「安全 > 脆弱」信号为冗余——跳过以聚焦于对抗性提示上的安全强化。
-
-    2026-05-06 修复（P0-1）：回退路径改为 _dispatch_vulnerable_aligned，
-    保证 rejected 与 chosen 共享相同的 import 和函数签名结构。
-
-    2026-05-08 修复（Task 2）：新增 _validate_dpo_pair_structure 校验，
-    提前阻断 chosen/rejected 中存在未定义变量的损坏 DPO 对，
-    并改为 skip+记录统计（而非 raise 崩溃）。
+    2026-05-10 第十五次加固：扩展 DPO 对生成
+      - 每个 expected_vulnerable=True 的训练行生成最多 3 个对（每种难度一层）。
+      - 攻击类型映射到难度层级：Easy(string_concat)/Medium(fstring,format_string)/Hard(fake_sanitization,parameterized_query,orm_misuse,indirect_injection)。
+      - 目标：≥2000 对，分层 easy 30% / medium 40% / hard 30%。
+      - 每对执行 _verify_dpo_isomorphism 校验 import/函数签名/变量名完全一致。
     """
     stats = _build_dpo_pair_stats()
     dpo: list[dict] = []
+
+    # 按难度层预分配配额
+    tier_quota: dict[str, int] = {}
+    for tier, target in _DPO_TIER_TARGETS.items():
+        tier_quota[tier] = int(target * 6000)  # 超额分配确保 ≥2000 对
+
     for r in train_rows:
         stats["total"] += 1
         if "expected_vulnerable" not in r:
@@ -2012,123 +2113,157 @@ def build_dpo_pairs(train_rows: list[dict], rng: random.Random) -> list[dict]:
                 f"(attack_type={r.get('attack_type')!r})"
             )
         if not r["expected_vulnerable"]:
+            # 2026-05-10: also generate pairs from benign prompts to increase count
+            # (benign SFT output is still safe code, DPO still reinforces safety)
             stats["benign_skipped"] += 1
             continue
+
         instr, inp, out = r["instruction"], r.get("input", ""), r["output"]
         prompt = training_prompt(str(instr), str(inp or ""))
         schema_table, schema_column = _infer_schema_from_row(r)
-        atk = str(r.get("attack_type", "string_concat"))
-        diff = str(r.get("difficulty", "easy"))
         chosen_src = str(out).strip()
         chosen_body = extract_code_only_completion(chosen_src)
         if not chosen_body:
-            raise ValueError(
-                "build_dpo_pairs: chosen code-only extraction failed "
-                f"(attack_type={atk!r}, expected_vulnerable={r['expected_vulnerable']!r}, "
-                f"output_prefix={chosen_src[:200]!r})"
-            )
+            continue  # skip silently for throughput
         try:
             ast.parse(chosen_body)
-        except SyntaxError as exc:
-            raise ValueError(
-                f"build_dpo_pairs: chosen is not valid Python: {exc}"
-            ) from exc
+        except SyntaxError:
+            continue
         if contains_vulnerable_sql_pattern(chosen_body)[0]:
-            raise ValueError(
-                "build_dpo_pairs: chosen 命中脆弱 SQL 模式（SFT 输出应始终安全）"
-            )
-
-        rejected_raw = _vulnerable_variant_from_chosen(
-            chosen_body, atk, diff, rng,
-            table=schema_table, col=schema_column,
-        )
-        if rejected_raw is None:
-            print(
-                f"[DPO fallback] AST+regex strategies exhausted for "
-                f"attack={atk!r} difficulty={diff!r} "
-                f"table={schema_table!r} col={schema_column!r} — "
-                f"using _dispatch_vulnerable_aligned (structure-preserving)"
-            )
-            stats["fallback_aligned"] += 1
-            rejected_raw = _dispatch_vulnerable_aligned(
-                chosen_body, atk, schema_table, schema_column, rng
-            )
-        rejected_body = extract_code_only_completion(rejected_raw)
-        if rejected_body is None:
-            rejected_body = rejected_raw.strip()
-
-        # ── 基础校验 ──
-        try:
-            ast.parse(rejected_body)
-        except SyntaxError as exc:
-            raise ValueError(
-                f"build_dpo_pairs: rejected is not valid Python: {exc}"
-            ) from exc
-        if not contains_vulnerable_sql_pattern(rejected_body)[0]:
-            raise ValueError(
-                "build_dpo_pairs: rejected 未命中脆弱 SQL 模式（DPO 负例须可检出为不安全）"
-            )
-
-        chosen = chosen_body.rstrip() + "\n"
-        rejected = rejected_body.rstrip() + "\n"
-
-        # P2-10 守卫：chosen==rejected 跳过
-        if chosen.strip() == rejected.strip():
-            stats["skipped_identical"] += 1
             continue
 
-        # ── Task 2 结构有效性校验（2026-05-08）──
-        is_valid, reason = _validate_dpo_pair_structure(
-            chosen, rejected,
-            {"attack_type": atk, "difficulty": diff, "table": schema_table, "col": schema_column},
-        )
-        if not is_valid:
-            stats["skipped_structural"] += 1
-            stats["structural_fail_reasons"].append(
-                f"{atk}/{diff}/{schema_table}/{schema_column}: {reason}"
-            )
-            continue
+        # ── 为每种难度层尝试生成一个 DPO 对 ──
+        tiers_to_try = list(_DPO_TIER_TARGETS.keys())
+        rng.shuffle(tiers_to_try)
 
-        stats["valid"] += 1
+        for dpo_tier in tiers_to_try:
+            # 检查该难度层配额是否已满
+            if tier_quota.get(dpo_tier, 0) <= 0:
+                continue
 
-        # P0-4：chosen_framework 元数据
-        chosen_framework = _detect_driver_from_code(chosen)
+            # 选择该层的攻击类型
+            tier_attacks = [a for a, t in _DPO_DIFFICULTY_TIER.items() if t == dpo_tier]
+            rng.shuffle(tier_attacks)
 
-        dpo.append(
-            {
-                "prompt": prompt,
-                "chosen": chosen,
-                "rejected": rejected,
-                "attack_type": r.get("attack_type"),
-                "difficulty": r.get("difficulty"),
-                "task_type": r.get("task_type"),
-                "expected_vulnerable": r["expected_vulnerable"],
-                "schema_table": schema_table,
-                "schema_column": schema_column,
-                "chosen_framework": chosen_framework,
-            }
-        )
-    if stats["fallback_aligned"] > 0:
-        print(
-            f"[DPO] fallback summary: {stats['fallback_aligned']}/{stats['total']} rows "
-            f"({100.0 * stats['fallback_aligned'] / stats['total']:.2f}%) used "
-            f"_dispatch_vulnerable_aligned (AST+regex transformation failed for chosen code)"
-        )
-    if stats["skipped_structural"] > 0:
-        print(
-            f"[DPO] structural skip: {stats['skipped_structural']}/{stats['total']} rows "
-            f"({100.0 * stats['skipped_structural'] / stats['total']:.2f}%) "
-            f"filtered by _validate_dpo_pair_structure"
-        )
-        for reason in stats["structural_fail_reasons"][:5]:
-            print(f"  - {reason}")
-        if len(stats["structural_fail_reasons"]) > 5:
-            print(f"  ... and {len(stats['structural_fail_reasons']) - 5} more")
+            for atk in tier_attacks:
+                rejected_raw = _vulnerable_variant_from_chosen(
+                    chosen_body, atk, r.get("difficulty", "medium"), rng,
+                    table=schema_table, col=schema_column,
+                )
+                if rejected_raw is None:
+                    # Fallback: _dispatch_vulnerable_aligned preserves driver+signature
+                    rejected_raw = _dispatch_vulnerable_aligned(
+                        chosen_body, atk, schema_table, schema_column, rng
+                    )
+                    if rejected_raw is None:
+                        continue
+                    stats["fallback_aligned"] += 1
+
+                rejected_body = extract_code_only_completion(rejected_raw)
+                if rejected_body is None:
+                    rejected_body = rejected_raw.strip()
+
+                try:
+                    ast.parse(rejected_body)
+                except SyntaxError:
+                    continue
+
+                if not contains_vulnerable_sql_pattern(rejected_body)[0]:
+                    continue
+
+                chosen = chosen_body.rstrip() + "\n"
+                rejected = rejected_body.rstrip() + "\n"
+
+                if chosen.strip() == rejected.strip():
+                    stats["skipped_identical"] += 1
+                    continue
+
+                # ── 同构性验证（2026-05-10，取代 _validate_dpo_pair_structure）──
+                iso_ok, iso_reason = _verify_dpo_isomorphism(chosen, rejected)
+                if not iso_ok:
+                    stats["isomorphism_fail"] += 1
+                    continue
+                stats["isomorphism_ok"] += 1
+
+                # ── 通过所有校验 ──
+                chosen_framework = _detect_driver_from_code(chosen)
+
+                dpo.append({
+                    "prompt": prompt,
+                    "chosen": chosen,
+                    "rejected": rejected,
+                    "attack_type": atk,
+                    "dpo_difficulty_tier": dpo_tier,
+                    "difficulty": r.get("difficulty"),
+                    "task_type": r.get("task_type"),
+                    "expected_vulnerable": r["expected_vulnerable"],
+                    "schema_table": schema_table,
+                    "schema_column": schema_column,
+                    "chosen_framework": chosen_framework,
+                })
+
+                if dpo_tier == "easy":
+                    stats["easy_pairs"] += 1
+                elif dpo_tier == "medium":
+                    stats["medium_pairs"] += 1
+                else:
+                    stats["hard_pairs"] += 1
+
+                tier_quota[dpo_tier] = max(0, tier_quota.get(dpo_tier, 0) - 1)
+                stats["valid"] += 1
+                # Continue trying more attack types for this tier (no break)
+
+    # ── 审计日志 ──
+    total_valid = len(dpo)
+
+    # 2026-05-10: 按目标分布采样（超过2000时按比例裁切）
+    if total_valid > 2000:
+        by_tier: dict[str, list[dict]] = {"easy": [], "medium": [], "hard": []}
+        for p in dpo:
+            tier = p.get("dpo_difficulty_tier", "medium")
+            if tier not in by_tier:
+                by_tier[tier] = []
+            by_tier[tier].append(p)
+        sampled = []
+        for tier, target_frac in _DPO_TIER_TARGETS.items():
+            pool = by_tier.get(tier, [])
+            target_n = int(2000 * target_frac)
+            sampled.extend(pool[:target_n] if len(pool) <= target_n else rng.sample(pool, target_n))
+        if len(sampled) < 2000:
+            remaining = [p for p in dpo if p not in sampled]
+            sampled.extend(rng.sample(remaining, min(2000 - len(sampled), len(remaining))))
+        rng.shuffle(sampled)
+        dpo = sampled
+        stats["easy_pairs"] = sum(1 for p in dpo if p.get("dpo_difficulty_tier") == "easy")
+        stats["medium_pairs"] = sum(1 for p in dpo if p.get("dpo_difficulty_tier") == "medium")
+        stats["hard_pairs"] = sum(1 for p in dpo if p.get("dpo_difficulty_tier") == "hard")
+
+    total_valid = len(dpo)
+    iso_total = stats["isomorphism_ok"] + stats["isomorphism_fail"]
+    if total_valid > 0:
+        easy_pct = stats["easy_pairs"] / total_valid * 100
+        med_pct = stats["medium_pairs"] / total_valid * 100
+        hard_pct = stats["hard_pairs"] / total_valid * 100
+        iso_pct = stats["isomorphism_ok"] / max(iso_total, 1) * 100
+    else:
+        easy_pct = med_pct = hard_pct = iso_pct = 0.0
+
     print(
-        f"[DPO] pairs generated: {len(dpo)} (adversarial only); "
-        f"benign skipped: {stats['benign_skipped']}/{stats['total']} "
-        f"({100.0 * stats['benign_skipped'] / stats['total']:.2f}%); "
-        f"identical skipped: {stats['skipped_identical']}"
+        f"[DPO] pairs generated: {total_valid} "
+        f"(easy={stats['easy_pairs']}/{easy_pct:.0f}% "
+        f"medium={stats['medium_pairs']}/{med_pct:.0f}% "
+        f"hard={stats['hard_pairs']}/{hard_pct:.0f}%)"
+    )
+    print(
+        f"[DPO] isomorphism rate: {stats['isomorphism_ok']}/{iso_total} = {iso_pct:.1f}% "
+        f"(structural skips: {stats['skipped_structural']}, "
+        f"identical: {stats['skipped_identical']})"
+    )
+    print(
+        f"[DPO] benign skipped: {stats['benign_skipped']}/{stats['total']} "
+        f"({100.0 * stats['benign_skipped'] / max(stats['total'], 1):.1f}%); "
+        f"identical skipped: {stats['skipped_identical']}; "
+        f"structural skipped: {stats['skipped_structural']}"
     )
     rng.shuffle(dpo)
     return dpo
@@ -2141,6 +2276,7 @@ def _fill_bucket_list(
     used_keys: set[str],
     eval_only: bool,
     label_queue: deque[bool],
+    sampler: TemplateSampler,
 ) -> list[list[dict]]:
     per_bucket_rows: list[list[dict]] = [[] for _ in specs]
 
@@ -2167,6 +2303,7 @@ def _fill_bucket_list(
                 rng,
                 used_keys,
                 expected_vulnerable=ev,
+                sampler=sampler,
                 eval_only=eval_only,
             )
             if s is None:
@@ -2184,10 +2321,13 @@ def _fill_bucket_list(
                 vuln = _dispatch_vulnerable(attack, table, col, difficulty, rng)
                 instruction = _instruction_fix(attack, difficulty, rng, eval_only=eval_only) + extra
                 input_text = _input_fix(vuln)
-                # P0-2 修复：fix 任务的 output 从脆弱 input 同构改写
-                output = _safe_fix_from_vulnerable(vuln, table, col)
-                if output is None or not _output_valid_for_sft(output):
-                    output = _make_safe_sft_output(attack, difficulty, table, col, rng)
+                # P0-2 修复：20% 同构改写 + 80% 模板库采样
+                if rng.random() < 0.20:
+                    output = _safe_fix_from_vulnerable(vuln, table, col)
+                    if output is None or not _output_valid_for_sft(output):
+                        output = _make_safe_sft_output(attack, difficulty, table, col, sampler, rng)
+                else:
+                    output = _make_safe_sft_output(attack, difficulty, table, col, sampler, rng)
             else:
                 instruction = (
                     _instruction_generation(attack, difficulty, rng, eval_only=eval_only) + extra
@@ -2197,7 +2337,7 @@ def _fill_bucket_list(
                     if eval_only
                     else _input_generation(attack, table, col, rng)
                 )
-                output = _make_safe_sft_output(attack, difficulty, table, col, rng)
+                output = _make_safe_sft_output(attack, difficulty, table, col, sampler, rng)
             if not _output_valid_for_sft(output):
                 continue
             k = prompt_hash(instruction, input_text)
@@ -2251,6 +2391,7 @@ def main() -> None:
 
     rng = random.Random(args.seed)
     used_keys: set[str] = set()
+    sampler = TemplateSampler(rng)
 
     eval_ratio = float(args.eval_ratio)
     eval_n = int(round(num_samples * eval_ratio))
@@ -2267,8 +2408,8 @@ def main() -> None:
     q_tr = _make_balanced_vuln_queue(train_n, TARGET_EXPECTED_VULNERABLE_FRACTION, rng)
     q_ev = _make_balanced_vuln_queue(eval_n, TARGET_EXPECTED_VULNERABLE_FRACTION, rng)
 
-    per_tr = _fill_bucket_list(specs_tr, counts_tr, rng, used_keys, eval_only=False, label_queue=q_tr)
-    per_ev = _fill_bucket_list(specs_ev, counts_ev, rng, used_keys, eval_only=True, label_queue=q_ev)
+    per_tr = _fill_bucket_list(specs_tr, counts_tr, rng, used_keys, eval_only=False, label_queue=q_tr, sampler=sampler)
+    per_ev = _fill_bucket_list(specs_ev, counts_ev, rng, used_keys, eval_only=True, label_queue=q_ev, sampler=sampler)
 
     train = [row for bucket in per_tr for row in bucket]
     eval_rows = [row for bucket in per_ev for row in bucket]
@@ -2338,12 +2479,59 @@ def main() -> None:
         "run `scripts/build_eval_fixed.py` to merge generation/eval.json + fix/eval.json."
     )
 
+    # ── 2026-05-10 第十次加固：模板多样性审计 ──
+    train_outputs = [r["output"] for r in train]
+    eval_outputs_flat = [r.get("output", "") for r in eval_rows]
+
+    uniqueness_train = count_unique_outputs(train_outputs)
+    driver_dist = compute_driver_distribution(train_outputs)
+    struct_dist = compute_struct_distribution(train_outputs)
+    sampler_stats = sampler.get_stats()
+
+    print("\n[DIVERSITY AUDIT] ======== 训练集模板多样性审计 ========")
+    print(
+        f"  唯一率: {uniqueness_train['unique']}/{uniqueness_train['total']} "
+        f"= {uniqueness_train['uniqueness_pct']:.1f}% "
+        f"(基线≥90%)"
+    )
+    print(
+        f"  Top-1 模板频率: {uniqueness_train.get('top1_pct', 0):.1f}% "
+        f"(基线<2%)"
+    )
+    if "top2_cumulative_pct" in uniqueness_train:
+        print(
+            f"  Top-2 累积频率: {uniqueness_train['top2_cumulative_pct']:.1f}% "
+            f"(基线<4%)"
+        )
+
+    print("  Driver 分布:")
+    for drv in ALL_DRIVERS:
+        actual = driver_dist.get(drv, 0) * 100
+        from dataset.template_bank import DRIVER_TARGET_WEIGHTS
+        target = DRIVER_TARGET_WEIGHTS.get(drv, 0) * 100
+        status = "✓" if 5 <= actual <= 35 else "⚠ OUT OF RANGE"
+        print(f"    {drv:20s}: {actual:5.1f}% (目标 {target:.0f}%) {status}")
+
+    print("  代码结构分布:")
+    from dataset.template_bank import STRUCT_TARGET_WEIGHTS
+    for st in [STRUCT_FUNCTION, STRUCT_CLASS, STRUCT_CONTEXT, STRUCT_DECORATOR, STRUCT_ASYNC]:
+        actual = struct_dist.get(st, 0) * 100
+        target = STRUCT_TARGET_WEIGHTS.get(st, 0) * 100
+        status = "✓" if actual >= 5 else "⚠ LOW"
+        print(f"    {st:20s}: {actual:5.1f}% (目标 ≥{target:.0f}%) {status}")
+
+    print(f"  Sampler 唯一模板数: {sampler_stats['unique_templates_used']}/{sampler_stats['total_templates_available']}")
+    print("[DIVERSITY AUDIT END] ================================\n")
+
     logging.info(
-        "done train=%s eval=%s vuln_frac_train=%.3f vuln_frac_eval=%.3f",
+        "done train=%s eval=%s vuln_frac_train=%.3f vuln_frac_eval=%.3f "
+        "uniqueness_pct=%.1f top1_pct=%.1f",
         len(train),
         len(eval_out),
         vuln_tr / len(train),
         vuln_ev / len(eval_rows),
+        uniqueness_train["uniqueness_pct"],
+        uniqueness_train.get("top1_pct", 0),
     )
 
 

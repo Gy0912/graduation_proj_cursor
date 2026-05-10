@@ -17,6 +17,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from training.dtype_utils import cast_trainable_bf16_to_float16
+from training.early_stopping import EarlyStoppingCallback, print_early_stop_summary
 from training.lora_utils import resolve_lora_target_modules
 from training.sft_preprocess import (
     build_sft_dataset_from_records,
@@ -139,6 +140,15 @@ def main() -> None:
         remove_unused_columns=False,
     )
 
+    # ── 2026-05-10 早停回调 ──
+    escfg = tcfg.get("early_stopping", {})
+    early_stop_cb = EarlyStoppingCallback(
+        patience=escfg.get("patience", 5),
+        min_delta=escfg.get("min_delta", 1e-4),
+        overfit_warn_threshold=escfg.get("overfit_warn_threshold", 0.5),
+        overfit_warn_patience=escfg.get("overfit_warn_patience", 3),
+        save_best=escfg.get("save_best", True),
+    )
     trainer = SFTTrainer(
         model=model,
         args=sft_args,
@@ -146,13 +156,21 @@ def main() -> None:
         eval_dataset=val_ds,
         processing_class=tok,
         peft_config=None,
+        callbacks=[early_stop_cb],
     )
     trainer.train()
 
+    # ── 2026-05-10: 早停后最佳 checkpoint 独立保存 ──
     out_dir.mkdir(parents=True, exist_ok=True)
+    if early_stop_cb.save_best and early_stop_cb.best_step >= 0:
+        trainer.model.save_pretrained(out_dir / "best_checkpoint")
+        tok.save_pretrained(out_dir / "best_checkpoint")
+        print(f"[EARLY STOP] best checkpoint adapter saved to {out_dir / 'best_checkpoint'}")
+
     trainer.model.save_pretrained(out_dir)
     tok.save_pretrained(out_dir)
     print(f"[OK] QLoRA SFT saved to {out_dir}")
+    print_early_stop_summary(early_stop_cb)
 
 
 if __name__ == "__main__":

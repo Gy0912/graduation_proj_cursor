@@ -60,6 +60,20 @@
 
 > 2026-05-09 **关键修复（二十八）SFT 过拟合 + DPO 崩溃 系统性修复**：数据分析揭示 SFT 数据仅 19 种模板（2200 条样本 26% 唯一性，76% `import pymysql`），SFT 训练 2 epochs 导致 6 步 loss 下降 91% → entropy 降至 0.35 → 完全过拟合。过拟合模型对训练外 token 概率→0 → DPO log(rejected_prob) 极负 → logps 从 -49 崩塌至 -994 → grad_norm 0.007→39.53（6000x）→ NaN → collapse。修复：① SFT epochs 2→1（消除纯记忆 epoch）；② SFT LR 2e-4→1e-4（平滑学习）；③ DPO beta 0.1→0.5（KL 约束强 5 倍）；④ DPO LR 5e-7→2e-7（降低参数更新幅度）；⑤ warmup_ratio 0.03→0.1（14 步 warmup）；⑥ max_grad_norm 1.0→0.5（硬性梯度裁剪）。全部 4 个 yaml + dpo_train.py + train_qlora_dpo.py 同步修改。详见 `logs/changelog_2026-05-09_sft_overfit_dpo_collapse.md`。
 
+> 2026-05-10 **关键修复（二十九）训练数据模板多样性扩展**：修复（二十八）仅通过降低 epochs/LR/beta 等超参缓解 SFT 过拟合症状，未触及**根因**——训练集唯一率仅 25.7%（2200 条样本只有 565 个唯一 output），旧版 `_safe_for_attack()` 仅 4 种核心安全模板在 3 个 driver 间循环。本次修复从源头解决：① 新增 `dataset/template_bank.py`（≥50 种代码结构变体、≥6 种 driver、≥100 个函数名池、5 类代码结构）；② `_safe_for_attack()` / `_make_safe_sft_output()` 重写为 TemplateSampler 的 importance-sampling 驱动（基于 driver 目标权重 + 结构类型目标权重 + 历史频率做重要性采样，任一模板频率 <2%）；③ 新增 psycopg2、mysql-connector、aiomysql/asyncpg 四种 driver；④ 新增类封装、上下文管理器、装饰器模式、异步模式四种代码结构；⑤ `main()` 收尾新增 [DIVERSITY AUDIT] 块（唯一率、Top-1 频率、driver 分布、结构分布全量审计）。预期唯一率从 25.7% → ≥90%，pymysql 占比从 76.2% → ~25%。检测/评测/训练/DPO 生成管线零改动。详见 `logs/changelog_2026-05-10_template_diversity_fix.md`。
+
+> 2026-05-10 **关键修复（三十）SFT 早停机制与过拟合检测**：SFT 训练在低熵数据下 loss 急速下降至接近 0 但无任何拦截，导致过拟合 checkpoint 进入 DPO 引发级联崩溃。本次修复新增三层防护：① `training/early_stopping.py` — `EarlyStoppingCallback`（TrainerCallback），每 eval 步监控 val_loss + overfit_ratio，patience=5 时自动停止 + 独立保存最佳 checkpoint 到 `best_checkpoint/`；② `resolve_best_sft_checkpoint()` — DPO 训练入口自动从最佳（而非最终过拟合）checkpoint 加载 adapter；③ `configs/default.yaml` 新增 `training.early_stopping` 配置段。向后完全兼容：无早停触发时 DPO 自动回退到最终 checkpoint。详见 `logs/changelog_2026-05-10_early_stopping.md`。
+
+> 2026-05-10 **关键修复（三十一）训练-评估语义对齐：指标层级重构**：`expected_vulnerable` 标记的是 prompt 是否对抗，而非 output 是否应脆弱——导致「完美安全模型 → Recall=0 → F1=0 → 被误判为差」的指标悖论。本次修复：① 新增 `safe_rate_on_benign` 主指标（安全 prompt 上输出安全代码的比例），与 `defense_success_rate` 构成「双向安全」主指标对（方向一致 ↑ 越高越好）；② 重构指标层级为 PRIMARY（defense/benign）→ AUXILIARY（injection_rate）→ DIAGNOSTIC（recall/fpr），彻底消除语义反转；③ `print_eval_summary()` 按层级分段打印、`compare_results.py` 对比表新增 `defense%` / `benign%` 列、`comparison_summary.json` 顶层新增主指标键。既有指标字段名/类型/数值完全不变。详见 `logs/changelog_2026-05-10_metric_hierarchy_fix.md`。
+
+> 2026-05-10 **关键修复（三十二）安全模板库 token 多样性增强**：第十次加固虽将模板从 4 种扩展到 ≥50 种，但同 driver+struct 的模板 token 重叠度高达 91%（仅 import 名和占位符不同），ORM 模板更是 100% 相同。本次从源头修复：① 变量名池 10→50、表列组合池新增 31 组、函数名池 110→132；② 新增 5 维编码风格变异（5 SQL 查询模式 × 4 结果处理 × 3 import 风格 × 9 注释 × 3 换行 = 1620 组合）；③ ORM 模板拆为 3 子变体（DeclarativeBase/Column/session.query）；④ 新增命名参数模板 `%(param)s`；⑤ 新增 `audit_token_diversity()` token 重叠度审计函数。最大重叠度从 0.91→0.84，平均 0.41，ORM vs raw SQL 重叠度仅 0.24。详见 `logs/changelog_2026-05-10_template_token_diversity.md`。
+
+> 2026-05-10 **关键修复（三十三）模板库 v2 重写：AST 级结构多样性**：前次修复仍在 driver×struct 矩阵思维下，实际仅产生 35 种规范骨架。本次彻底重写 `dataset/template_bank.py`：56 个手工设计的独立 AST 级模板，覆盖 11 种代码结构类别（基础查询/try-except/验证/多函数/类/上下文管理器/装饰器/异步/生成器/closure/Core SQLAlchemy），56 种唯一关键字标记确保 canonical token 集零重复。实际使用中 max overlap 0.64 (< 0.70)，56/56=100% 唯一率。详见 `logs/changelog_2026-05-10_template_v2_rewrite.md`。
+
+> 2026-05-10 **关键修复（三十四）Driver 多样化验证**：验证 v2 模板库 7 种 driver 分布满足目标（pymysql 22%、sqlite3 20%、sqlalchemy 23%、psycopg2 15%、mysql-connector 9%、aiomysql/asyncpg 各 5%），全部在 10-25% 范围内。每种 driver 使用独特的 API 风格和占位符模式（`%s`/`?`/`:named`/`$1`），模型可以从 import 行准确推断占位符类型。详见 `logs/changelog_2026-05-10_driver_diversity_verification.md`。
+
+> 2026-05-10 **关键修复（三十五）DPO 偏好对同构化与难度分层**：新增 `_verify_dpo_isomorphism()` AST 级验证——每对 chosen/rejected 的 import/函数签名/变量名 100% 一致，仅 SQL 构造方式不同。按攻击类型分三层（Easy 30%/Medium 40%/Hard 30%）：string_concat→Easy, fstring/format_string→Medium, fake_sanitization/parameterized_query/orm_misuse/indirect_injection→Hard。扩展对数从 ~1100→**2000**。isomorphism 验证率 100%。详见 `logs/changelog_2026-05-10_dpo_isomorphism_fix.md`。
+
 ### Extraction Contract (2026-05-01)
 
 Evaluation treats model output as a structured response, not as a free-form blob. Code extraction is deterministic:
@@ -107,7 +121,8 @@ project_root/
 │   └── eval_expanded.json           # 扩展评测集（对抗版 + 标签）
 ├── dataset/                         # 数据生成脚本（主入口：generate_expanded_dataset.py）
 │   ├── adversarial.py               # 【对抗 marker/模板/校验 single source of truth】build_secure_response + check_adversarial_dataset + ADVERSARIAL_MARKERS
-│   ├── generate_expanded_dataset.py # 生成训练+评测+DPO；ambiguous 分支走 build_secure_response；收尾跑 check_adversarial_dataset 失败即 SystemExit
+│   ├── template_bank.py             # 【2026-05-10 第十次加固】安全模板 single source of truth（≥50种代码结构变体、≥6种driver、≥100个函数名池、5类代码结构、importance-sampling驱动）
+│   ├── generate_expanded_dataset.py # 生成训练+评测+DPO；ambiguous 分支走 build_secure_response；收尾跑 check_adversarial_dataset 失败即 SystemExit；集成 TemplateSampler 重要性采样
 │   ├── research_schema.py           # to_research_record + write_research_splits（写 per-task 拆分，不写 eval_fixed.json）
 │   └── ...
 ├── detection/                       # 漏洞检测（规则/Bandit/污点）
@@ -118,6 +133,8 @@ project_root/
 │   ├── metrics.py                   # 聚合：混淆矩阵、FPR/FNR、per_detector_vs_expected 等
 │   └── experiment_log.py
 ├── training/                        # LoRA / QLoRA / SFT / DPO 训练入口
+│   ├── early_stopping.py            # 【2026-05-10 第十一次加固】EarlyStoppingCallback + resolve_best_sft_checkpoint + 过拟合检测
+│   ├── train_lora_sft.py            # LoRA+SFT（集成早停回调）
 ├── scripts/                         # 构建/准备/汇总脚本
 │   ├── build_eval_fixed.py          # 【data/combined/eval_fixed.json 唯一写入者】合并 generation+fix，pre/post-write 双重 schema 校验
 │   ├── build_dataset.py             # 仅写 SFT/DPO JSONL；不再覆盖评测集

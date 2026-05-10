@@ -164,6 +164,9 @@ def metrics_block_from_eval_json(path: Path) -> dict:
         "extraction_failure_rate": float(summary["extraction_failure_rate"]),
         "sql_injection_rate_valid": float(summary["sql_injection_rate_valid"]),
         "safe_rate_valid": float(summary["safe_rate_valid"]),
+        # 2026-05-10 修复 F2：主指标进入对比表
+        "defense_success_rate": float(summary.get("defense_success_rate", 0.0)),
+        "safe_rate_on_benign": float(summary.get("safe_rate_on_benign", 0.0)),
         "valid_only": _bundle_metrics(summary, "valid_only_metrics"),
         "conservative": _bundle_metrics(summary, "conservative_metrics"),
         "strict": _bundle_metrics(summary, "strict_metrics"),
@@ -278,6 +281,8 @@ def _print_table(per_model: dict[str, dict]) -> None:
         f"{'n_samples':>9}",
         f"{'n_invalid':>9}",
         f"{'ext_fail':>8}",
+        f"{'defense%':>8}",
+        f"{'benign%':>8}",
         f"{'inj_valid':>9}",
         f"{'F1_valid':>9}",
         f"{'F1_cons':>8}",
@@ -296,6 +301,8 @@ def _print_table(per_model: dict[str, dict]) -> None:
             f"{row['n_samples']:>9d}",
             f"{row['n_invalid']:>9d}",
             f"{row['extraction_failure_rate']:>8.4f}",
+            _format_pct_cell(row.get("defense_success_rate"), 8),
+            _format_pct_cell(row.get("safe_rate_on_benign"), 8),
             f"{row['sql_injection_rate_valid']:>9.4f}",
             f"{row['valid_only']['f1']:>9.4f}",
             f"{row['conservative']['f1']:>8.4f}",
@@ -347,6 +354,8 @@ def main() -> None:
 
     base_summary = load_summary(ROOT / method_to_output["baseline"])
     baseline_inj_valid = float(base_summary["sql_injection_rate_valid"])
+    baseline_defense = float(base_summary.get("defense_success_rate", 0.0))
+    baseline_benign = float(base_summary.get("safe_rate_on_benign", 0.0))
     baseline_rq = _response_quality_block(base_summary)
 
     summary: dict = {
@@ -354,7 +363,10 @@ def main() -> None:
         "baseline_extraction_failure_rate": float(base_summary["extraction_failure_rate"]),
         "baseline_sql_injection_rate_valid": baseline_inj_valid,
         "baseline_safe_rate_valid": float(base_summary["safe_rate_valid"]),
-        # 2026-04-22 九次加固：baseline 的响应质量基线，便于与下游 method 对比阅读
+        # 2026-05-10 修复 F2：主指标进入顶层 summary
+        "baseline_defense_success_rate": baseline_defense,
+        "baseline_safe_rate_on_benign": baseline_benign,
+        # 2026-04-22 九次加固：baseline 的响应质量基线
         "baseline_warning_rate": baseline_rq["warning_rate"],
         "baseline_explanation_rate": baseline_rq["explanation_rate"],
         "baseline_safe_solution_rate": baseline_rq["safe_solution_rate"],
@@ -374,6 +386,9 @@ def main() -> None:
         summary[f"{method}_extraction_failure_rate"] = block["extraction_failure_rate"]
         summary[f"{method}_sql_injection_rate_valid"] = block["sql_injection_rate_valid"]
         summary[f"{method}_safe_rate_valid"] = block["safe_rate_valid"]
+        # 2026-05-10 修复 F2：主指标进入顶层 summary
+        summary[f"{method}_defense_success_rate"] = block["defense_success_rate"]
+        summary[f"{method}_safe_rate_on_benign"] = block["safe_rate_on_benign"]
         summary[f"{method}_sql_injection_reduction_valid_vs_baseline_pct"] = pct_drop(
             baseline_inj_valid, block["sql_injection_rate_valid"]
         )
@@ -392,6 +407,8 @@ def main() -> None:
         summary.pop(f"{dropped}_extraction_failure_rate", None)
         summary.pop(f"{dropped}_sql_injection_rate_valid", None)
         summary.pop(f"{dropped}_safe_rate_valid", None)
+        summary.pop(f"{dropped}_defense_success_rate", None)
+        summary.pop(f"{dropped}_safe_rate_on_benign", None)
         summary.pop(f"{dropped}_sql_injection_reduction_valid_vs_baseline_pct", None)
         summary.pop(f"{dropped}_warning_rate", None)
         summary.pop(f"{dropped}_explanation_rate", None)

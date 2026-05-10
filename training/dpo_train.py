@@ -23,6 +23,7 @@ from trl import DPOConfig
 from training.config_utils import load_merged_config
 from training.stable_dpo_trainer import StableDPOTrainer
 from training.dtype_utils import cast_trainable_bf16_to_float16, print_cuda_amp_debug, summarize_parameter_dtypes
+from training.early_stopping import resolve_best_sft_checkpoint
 from training.gpu_debug import GpuDebugCallback
 
 
@@ -79,6 +80,9 @@ def main() -> None:
     if not dpo_path.exists():
         raise FileNotFoundError(f"未找到 DPO 数据：{dpo_path}，请先运行 dataset/generate_expanded_dataset.py")
 
+    # ── 2026-05-10: 从最佳 SFT checkpoint 启动 DPO ──
+    sft_adapter_dir, best_marker = resolve_best_sft_checkpoint(sft_dir)
+
     tcfg = cfg["training"]
     dcfg = cfg.get("dpo", {})
     train_ds = load_dpo_dataset(dpo_path)
@@ -106,7 +110,7 @@ def main() -> None:
     print(f"[DEBUG] next(model.parameters()).device = {next(model.parameters()).device}")
     summarize_parameter_dtypes(model, "base_before_peft")
 
-    model = PeftModel.from_pretrained(model, str(sft_dir), is_trainable=True)
+    model = PeftModel.from_pretrained(model, str(sft_adapter_dir), is_trainable=True)
     summarize_parameter_dtypes(model, "after_sft_adapter")
 
     cast_trainable_bf16_to_float16(model)

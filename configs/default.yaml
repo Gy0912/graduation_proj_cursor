@@ -96,6 +96,16 @@ training:
   # lora_target_modules: [q_proj, k_proj, v_proj, o_proj, c_fc, c_proj]
   lora_target_modules: auto
 
+  # ── 2026-05-10 早停（Early Stopping）配置 ──
+  # 防止低熵数据下的 SFT 过拟合；在 val_loss 连续 patience 步未改善时自动停止训练。
+  # DPO 训练入口会自动从 best_checkpoint/ 加载（而非最终过拟合 checkpoint）。
+  early_stopping:
+    patience: 5                 # 连续未改善步数阈值（建议 3-7）
+    min_delta: 1.0e-4           # 改善的最小绝对变化量
+    overfit_warn_threshold: 0.5 # overfit_ratio = train_loss/val_loss 低于此值触发警告
+    overfit_warn_patience: 3    # overfit_ratio 连续恶化步数才警告
+    save_best: true             # 是否保存最佳 checkpoint 到 best_checkpoint/ 目录
+
 dpo:
   # 2026-05-09 P0 FIX: beta 0.1→0.5 — 加强KL约束防止过拟合SFT模型在DPO中分布崩溃
   beta: 0.5
