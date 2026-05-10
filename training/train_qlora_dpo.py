@@ -107,7 +107,7 @@ def run_qlora_dpo(config_path: str) -> None:
         fp16=False,
         max_grad_norm=1.0,
         max_length=max_len,
-        beta=float(dcfg.get("beta", 0.01)),
+        beta=float(dcfg.get("beta", 0.1)),
         precompute_ref_log_probs=True,
         precompute_ref_batch_size=1,
         dataset_num_proc=1,

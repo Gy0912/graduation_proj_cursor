@@ -112,7 +112,7 @@ def main() -> None:
     cast_trainable_bf16_to_float16(model)
 
     max_len = int(dcfg.get("max_length", 1024))
-    beta = float(dcfg.get("beta", 0.01))
+    beta = float(dcfg.get("beta", 0.5))  # 2026-05-09: 回退=0.5 防止过拟合SFT→DPO崩溃
 
     dpo_args = DPOConfig(
         output_dir=str(out_dir),
@@ -126,7 +126,7 @@ def main() -> None:
         save_strategy="steps",
         bf16=False,
         fp16=False,
-        max_grad_norm=1.0,
+        max_grad_norm=0.5,  # 2026-05-08: 降低到 0.5 防止 DPO step~60 梯度爆炸
         max_length=max_len,
         beta=beta,
         precompute_ref_log_probs=True,

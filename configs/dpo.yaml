@@ -8,11 +8,13 @@ files:
   dpo_pairs: data/dpo_pairs.json
 
 training:
-  learning_rate_dpo: 5.0e-7
+  # 2026-05-09: 降低 LR 防止过拟合 SFT 模型 DPO 崩溃（不覆盖 default.yaml）
+  # learning_rate_dpo 继承自 default.yaml (2.0e-7)
   num_train_epochs_dpo: 1
   grad_accum: 8
   save_steps: 200
 
 dpo:
-  beta: 0.1
+  # 2026-05-09: beta 保持 0.5（与 default.yaml 一致）——防止DPO分布崩溃
+  beta: 0.5
   max_length: 1024

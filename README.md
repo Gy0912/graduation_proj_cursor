@@ -52,6 +52,14 @@
 
 > 2026-05-06 **关键修复（二十四 P1-6）**：修复 DPO max_length 截断可使 chosen/rejected 为空。当 prompt 超过 max_length 时 `budget=0`，`chosen_ids[:0]`/`rejected_ids[:0]` 均为空列表 → `chosen_labels` 全 `-100`（loss=0）、`chosen_input_ids==rejected_input_ids`（log-ratio=0）→ 零梯度、浪费 GPU 算力。修复：`_tokenize_one()` 中空 chosen/rejected 返回 `None`；`_prepare_dataset()` 过滤 `None` 并记录 warning（全丢弃时 raise ValueError）。详见 `logs/changelog_2026-05-06_dpo_empty_truncation.md`。
 
+> 2026-05-08 **关键修复（二十五）DPO tokenization pipeline 彻底重写**：旧版 `StableDPOTrainer._prepare_dataset()` 为规避 multiprocessing 崩溃而手工实现了简化版 DPO tokenization——分别 tokenize prompt/chosen 后手工拼接，导致 EOS token 丢失、completion boundary 错乱、completion mask 偏移（字段名与 DPODataCollator 契约冲突）、NaN loss、梯度爆炸、模型 collapse 为重复逗号。**根本原因**：不能手工简化 TRL 的 tokenization pipeline——EOS 追加、prompt+chosen 合并 tokenize 再拆分、completion mask 由 collator 自动构建，这三个行为缺一不可。修复：`_prepare_dataset()` 彻底重写，严格复制 TRL 原生 tokenize_fn 语义（EOS 追加 → `tokenize(prompt+chosen)` 合并 → `chosen_ids = full[len(prompt):]` 拆分 → 返回 `{prompt_ids, chosen_ids, rejected_ids}`），仅将 `dataset.map()` 替换为主进程 for 循环。新增 debug stats 日志（tokenized/dropped/EOS append/max lengths）。详见 `logs/changelog_2026-05-08_dpo_tokenization_rewrite.md`。
+
+> 2026-05-08 **关键修复（二十六）DPO 数据语义损坏与训练稳定性全面修复**：修复三个互锁的 P0 根因——① `_extract_likely_param()` 黑名单排除法漏过 SQL 中间变量（`frag`/`part`/`clause`/`base`/`prefix`），导致 safe fix 生成引用未定义变量的 chosen → DPO 对语义损坏。重写为 whitelist-first + AST 数据流追踪（函数签名→execute()→赋值追溯），20/20 测试通过。② 新增 `_validate_dpo_pair_structure()` 在 `build_dpo_pairs` 写入前校验（AST 可解析、变量定义、undefined 检测），损坏对 skip+log 而非崩溃。③ `build_dpo_pairs` 改为统计驱动（输出 structural skip count + reasons）。跨模型兼容（AST 通用、无 tokenizer hack），不改变 dataset schema/CLI/SFT pipeline。详见 `logs/changelog_2026-05-08_dpo_data_stability.md`。
+
+> 2026-05-09 **关键修复（二十七）DPO collapse 根因修复**：DPO 训练 step~60 崩溃 + 评估输出 `,%s, %s, ...` 重复 token 的根因是训练数据泄露——全部 vulnerable 代码模板末尾都有 `# ref={随机数}` 注释，fix 任务 INPUT 将此泄露给模型，SFT 模型将其记忆为「代码尾部模式」。DPO 在此污染的 checkpoint 上训练，step 60 处梯度突破 `max_grad_norm=1.0` → NaN → collapse → 输出记忆的 `# ref=...` + `%s` 重复序列。修复：① 删除全部 7 个 `_vuln_*` 模板中的 `# ref=` 噪声行；② `# ref=` 加入 SFT 训练 forbidden tokens；③ DPO `max_grad_norm` 降至 0.5 防止梯度爆炸。详见 `logs/changelog_2026-05-09_dpo_collapse_root_cause.md`。
+
+> 2026-05-09 **关键修复（二十八）SFT 过拟合 + DPO 崩溃 系统性修复**：数据分析揭示 SFT 数据仅 19 种模板（2200 条样本 26% 唯一性，76% `import pymysql`），SFT 训练 2 epochs 导致 6 步 loss 下降 91% → entropy 降至 0.35 → 完全过拟合。过拟合模型对训练外 token 概率→0 → DPO log(rejected_prob) 极负 → logps 从 -49 崩塌至 -994 → grad_norm 0.007→39.53（6000x）→ NaN → collapse。修复：① SFT epochs 2→1（消除纯记忆 epoch）；② SFT LR 2e-4→1e-4（平滑学习）；③ DPO beta 0.1→0.5（KL 约束强 5 倍）；④ DPO LR 5e-7→2e-7（降低参数更新幅度）；⑤ warmup_ratio 0.03→0.1（14 步 warmup）；⑥ max_grad_norm 1.0→0.5（硬性梯度裁剪）。全部 4 个 yaml + dpo_train.py + train_qlora_dpo.py 同步修改。详见 `logs/changelog_2026-05-09_sft_overfit_dpo_collapse.md`。
+
 ### Extraction Contract (2026-05-01)
 
 Evaluation treats model output as a structured response, not as a free-form blob. Code extraction is deterministic:

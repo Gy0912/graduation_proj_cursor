@@ -48,11 +48,11 @@ training:
   max_grad_norm: 1.0
   dataloader_num_workers: 2
   dataloader_pin_memory: true
-  learning_rate_sft: 0.0002
-  learning_rate_dpo: 5.0e-07
-  num_train_epochs_sft: 2
+  learning_rate_sft: 0.0001
+  learning_rate_dpo: 2.0e-07
+  num_train_epochs_sft: 1
   num_train_epochs_dpo: 1
-  warmup_ratio: 0.03
+  warmup_ratio: 0.1
   logging_steps: 10
   save_steps: 100
   eval_steps: 100
@@ -62,7 +62,7 @@ training:
   load_in_4bit: true
   lora_target_modules: auto
 dpo:
-  beta: 0.1
+  beta: 0.5
   max_length: 1024
   max_prompt_length: 512
 outputs:

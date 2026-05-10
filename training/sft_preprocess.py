@@ -43,6 +43,7 @@ FORBIDDEN_TRAINING_TOKENS: tuple[str, ...] = (
     "### Response",
     "### Solution",
     "### Test",
+    "# ref=",  # 2026-05-08: 训练数据泄露标志——模型不应输出 ref 注释
 )
 
 def normalize_sft_records_for_training(records: list[dict[str, Any]]) -> dict[str, Any]:
@@ -124,8 +125,10 @@ def tokenize_prompt_completion_batched(
     all_masks: list[list[int]] = []
 
     for prompt, completion in zip(prompts, completions):
-        p_ids = tokenizer(prompt, add_special_tokens=False)["input_ids"]
-        full_ids = tokenizer(prompt + completion, add_special_tokens=False)["input_ids"]
+        # P0 FIX (2026-05-08): prompt 需要 BOS token (add_special_tokens=True)
+        # 与 DPO P0-3 修复一致。chosen/completion 保持 False 避免中段 BOS。
+        p_ids = tokenizer(prompt, add_special_tokens=True)["input_ids"]
+        full_ids = tokenizer(prompt + completion, add_special_tokens=True)["input_ids"]
 
         if len(full_ids) < len(p_ids):
             # 极端 tokenizer 行为：保底用全长当 completion

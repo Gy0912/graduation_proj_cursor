@@ -1,4 +1,11 @@
-"""DPO 训练数值稳定性：logits 裁剪、NaN 检测。"""
+"""DPO 训练数值稳定性：logits 裁剪、NaN 检测。
+
+2026-05-08 重大修复：重写 _prepare_dataset 以正确匹配 TRL 原生
+DPO tokenization 契约。旧版手工构建 tokenization 导致 EOS 丢失、
+completion boundary 错乱、completion mask 错误、NaN loss 和模型 collapse。
+现已恢复 TRL 的 prompt+chosen 合并 tokenize + 拆分 模式，
+并正确追加 EOS token。
+"""
 from __future__ import annotations
 
 import contextlib
@@ -66,9 +73,10 @@ class DpoNanGuardCallback(TrainerCallback):
 class StableDPOTrainer(DPOTrainer):
     """在标准 DPOTrainer 上增加 logits clamp、loss/梯度 NaN 防护。
 
-    同时覆写 ``_prepare_dataset``，直接用主进程循环调用 TRL 的
-    ``tokenize_fn`` 而非 ``dataset.map()``，彻底规避 datasets 多进程
-    子进程中 accelerate.logging 的 PartialState 未初始化崩溃。"""
+    2026-05-08 重大修复：覆写 ``_prepare_dataset`` 以主进程同步执行
+    TRL 原生 tokenization 语义（EOS 追加、prompt+chosen 合并 tokenize、
+    拆分 completion-only ids），同时规避 datasets.map 多进程
+    PartialState 崩溃。不再手工拼接 prompt/chosen ids。"""
 
     def __init__(self, *args, **kwargs):
         dpo_args = kwargs.get("args")
@@ -83,11 +91,20 @@ class StableDPOTrainer(DPOTrainer):
         self.add_callback(DpoNanGuardCallback(self.model))
 
     def _prepare_dataset(self, dataset, processing_class, args, mode):
-        """主进程同步 tokenization —— 完全替代 datasets.map() 多进程路径。
+        """TRL 原生 tokenization 语义 + 主进程同步执行（规避 datasets.map 多进程崩溃）。
 
-        TRL 的默认实现在 ``dataset.map()`` 中 spawn 子进程调用 tokenize_fn，
-        子进程中 accelerate.logging 因 PartialState 未初始化而崩溃。
-        这里逐条在主进程中 tokenize 后重新构建 Dataset，完全回避多进程。
+        2026-05-08 彻底重写：
+        * 旧版手工拼接 prompt_ids + chosen_ids，未追加 EOS，边界错误，
+          completion mask 错乱，导致 NaN loss / 梯度爆炸 / 模型 collapse。
+        * 现已严格复制 TRL 原生 tokenize_fn 的行为：
+          1) 在 tokenization 前追加 EOS 到 chosen/rejected（TRL 的 add_eos）
+          2) tokenize prompt+chosen 合并 → 拆分得出 completion-only ids
+          3) completion_mask 由 collator 自动从 prompt_ids/chosen_ids 长度构建
+          4) 数据集返回 {"prompt_ids","chosen_ids","rejected_ids"}——
+             符合 DPODataCollator 的契约
+
+        仅将 datasets.map() 替换为主进程 for 循环以规避
+        PartialState 多进程初始化崩溃。
         """
         from datasets import Dataset
 
@@ -95,90 +112,147 @@ class StableDPOTrainer(DPOTrainer):
         max_prompt = getattr(
             args, "max_prompt_length", getattr(self, "max_prompt_length", 512)
         )
+        eos_token = getattr(processing_class, "eos_token", None)
+        eos_str = eos_token if isinstance(eos_token, str) else (str(eos_token) if eos_token else "")
+
+        stats = {
+            "total": 0,
+            "kept": 0,
+            "dropped_empty_comp": 0,
+            "dropped_trunc": 0,
+            "eos_appended": 0,
+            "max_prompt_len": 0,
+            "max_chosen_len": 0,
+            "max_rejected_len": 0,
+            "max_total_len": 0,
+        }
 
         def _tokenize_one(example):
-            """与 TRL tokenize_fn 等价的单条 tokenization（主进程运行）。
-
-            P0-3 修复（2026-05-06）：prompt 使用 add_special_tokens=True
-            以确保序列以 BOS token 开头（StarCoder2 的 <|endoftext|>）。
-            chosen/rejected 保持 add_special_tokens=False 避免中段
-            重复插入 BOS。
-            """
             prompt = example["prompt"]
             chosen = example["chosen"]
             rejected = example["rejected"]
 
-            prompt_ids = processing_class(prompt, add_special_tokens=True)["input_ids"]
-            chosen_ids = processing_class(chosen, add_special_tokens=False)["input_ids"]
-            rejected_ids = processing_class(rejected, add_special_tokens=False)["input_ids"]
+            # ── Step 1: 追加 EOS（TRL 原生 add_eos 行为）──
+            eos_appended_here = 0
+            if eos_str:
+                if chosen and not chosen.rstrip().endswith(eos_str):
+                    chosen = chosen + eos_str
+                    eos_appended_here += 1
+                if rejected and not rejected.rstrip().endswith(eos_str):
+                    rejected = rejected + eos_str
+                    eos_appended_here += 1
 
-            # Truncation (与 TRL 逻辑一致，但保留 BOS)
+            # ── Step 2: 合并 tokenize prompt+chosen / prompt+rejected ──
+            # 这是 TRL 原生 tokenize_fn 的核心：不能分别 tokenize，
+            # 否则 whitespace / special token 边界不一致。
+            prompt_enc = processing_class(prompt, add_special_tokens=True)
+            prompt_ids = prompt_enc["input_ids"]
+
+            full_chosen_enc = processing_class(prompt + chosen, add_special_tokens=True)
+            full_chosen_ids = full_chosen_enc["input_ids"]
+            full_rejected_enc = processing_class(prompt + rejected, add_special_tokens=True)
+            full_rejected_ids = full_rejected_enc["input_ids"]
+
+            # ── Step 3: 拆分得出 completion-only ids ──
+            # TRL 原生做法：取 prompt+chosen 的前 len(prompt) 个 token
+            # 作为 prompt，其余为 completion。
+            # 注意：tokenizer 在拼接边界可能因 whitespace 产生 1-2
+            # token 的偏移，这与 TRL 的 _safe_tokenize_warning 行为一致——
+            # TRL 也是警告后仍按长度切分。这里采用相同策略。
+            if len(full_chosen_ids) > len(prompt_ids):
+                chosen_ids = full_chosen_ids[len(prompt_ids):]
+            else:
+                SAFE_DPO_LOGGER.warning(
+                    "prompt+chosen shorter than prompt alone — tokenizing chosen separately"
+                )
+                chosen_ids = processing_class(chosen, add_special_tokens=False)["input_ids"]
+
+            if len(full_rejected_ids) > len(prompt_ids):
+                rejected_ids = full_rejected_ids[len(prompt_ids):]
+            else:
+                SAFE_DPO_LOGGER.warning(
+                    "prompt+rejected shorter than prompt alone — tokenizing rejected separately"
+                )
+                rejected_ids = processing_class(rejected, add_special_tokens=False)["input_ids"]
+
+            # ── Step 4: Truncation（与 TRL 一致的语义）──
             if max_prompt is not None and len(prompt_ids) > max_prompt:
-                # 保留 BOS（第一个 token），从右侧截取剩余长度
+                # 保留 BOS，从左侧截断内容
                 if max_prompt <= 1:
-                    prompt_ids = prompt_ids[:1]  # 仅保留 BOS
+                    prompt_ids = prompt_ids[:1]
                 else:
                     prompt_ids = [prompt_ids[0]] + prompt_ids[-(max_prompt - 1):]
+
             if max_len is not None:
                 total_len = len(prompt_ids) + max(len(chosen_ids), len(rejected_ids))
                 if total_len > max_len:
-                    # 优先截断 chosen/rejected，保留 prompt
                     budget = max_len - len(prompt_ids)
-                    if budget <= 0:
-                        # 极端情况：prompt 本身超过 max_len，保留 BOS 截断
-                        if max_len <= 1:
-                            prompt_ids = prompt_ids[:1]
-                        else:
-                            prompt_ids = [prompt_ids[0]] + prompt_ids[-(max_len - 1):]
-                        budget = 0
-                    chosen_ids = chosen_ids[:budget]
-                    rejected_ids = rejected_ids[:budget]
+                    if budget > 0:
+                        chosen_ids = chosen_ids[:budget]
+                        rejected_ids = rejected_ids[:budget]
+                    else:
+                        # prompt 本身超过 max_length → 丢弃
+                        return {"_drop": "prompt_too_long", "_eos": eos_appended_here}
 
-            # Build prompt + chosen/rejected
-            # P1-6 修复（2026-05-06）：budget==0 时 chosen/rejected 为空
-            # → DPO loss=0 → 梯度=0 → 浪费计算。丢弃此类样本。
+            # ── Step 5: 守卫：空 completion 丢弃 ──
             if len(chosen_ids) == 0 or len(rejected_ids) == 0:
-                return None
+                return {"_drop": "empty_completion", "_eos": eos_appended_here}
 
-            chosen_input_ids = prompt_ids + chosen_ids
-            chosen_labels = [-100] * len(prompt_ids) + chosen_ids
-            rejected_input_ids = prompt_ids + rejected_ids
-            rejected_labels = [-100] * len(prompt_ids) + rejected_ids
-
+            # ── Step 6: 返回符合 DPODataCollator 契约的字段 ──
             return {
-                "chosen_ids": chosen_ids,
-                "chosen_attention_mask": [1] * len(chosen_input_ids),
-                "chosen_labels": chosen_labels,
-                "rejected_ids": rejected_ids,
-                "rejected_attention_mask": [1] * len(rejected_input_ids),
-                "rejected_labels": rejected_labels,
                 "prompt_ids": prompt_ids,
-                "prompt_attention_mask": [1] * len(prompt_ids),
+                "chosen_ids": chosen_ids,
+                "rejected_ids": rejected_ids,
+                "_eos": eos_appended_here,
             }
 
+        # ── 主进程同步 tokenize ──
         tokenized_rows = []
-        dropped_empty = 0
         for example in dataset:
+            stats["total"] += 1
             row = _tokenize_one(example)
-            if row is not None:
-                tokenized_rows.append(row)
-            else:
-                dropped_empty += 1
+            drop_reason = row.pop("_drop", None) if row else "null"
+            eos_cnt = row.pop("_eos", 0) if row else 0
+            stats["eos_appended"] += eos_cnt
+            if drop_reason:
+                if drop_reason == "empty_completion":
+                    stats["dropped_empty_comp"] += 1
+                else:
+                    stats["dropped_trunc"] += 1
+                continue
+            tokenized_rows.append(row)
+            stats["kept"] += 1
+            stats["max_prompt_len"] = max(stats["max_prompt_len"], len(row["prompt_ids"]))
+            stats["max_chosen_len"] = max(stats["max_chosen_len"], len(row["chosen_ids"]))
+            stats["max_rejected_len"] = max(stats["max_rejected_len"], len(row["rejected_ids"]))
+            stats["max_total_len"] = max(
+                stats["max_total_len"],
+                len(row["prompt_ids"]) + max(len(row["chosen_ids"]), len(row["rejected_ids"])),
+            )
 
-        if dropped_empty > 0:
+        # ── 调试日志 ──
+        SAFE_DPO_LOGGER.info(
+            "DPO tokenization stats: total=%d kept=%d "
+            "dropped_empty_comp=%d dropped_trunc=%d "
+            "eos_appended=%d "
+            "max_lens=(prompt=%d chosen=%d rejected=%d total=%d)",
+            stats["total"], stats["kept"],
+            stats["dropped_empty_comp"], stats["dropped_trunc"],
+            stats["eos_appended"],
+            stats["max_prompt_len"], stats["max_chosen_len"],
+            stats["max_rejected_len"], stats["max_total_len"],
+        )
+        if stats["dropped_empty_comp"] > 0:
             SAFE_DPO_LOGGER.warning(
-                "P1-6: %d/%d DPO samples dropped (chosen/rejected fully truncated — "
-                "prompt too long for max_length=%s). Consider increasing max_length "
-                "or reducing prompt length.",
-                dropped_empty, len(dataset), max_len,
+                "P1-6: %d/%d samples dropped — completion fully truncated. "
+                "Consider increasing max_length (current=%d) or reducing prompt length.",
+                stats["dropped_empty_comp"], stats["total"], max_len,
             )
-        if len(tokenized_rows) == 0:
+        if stats["kept"] == 0:
             raise ValueError(
-                "All DPO samples truncated to zero — reduce prompt length "
-                "or increase max_length"
+                "All DPO samples dropped — reduce prompt length or increase max_length"
             )
 
-        # 用 from_list 构建 Dataset（避免 from_dict 对不等长 list 的抱怨）
         return Dataset.from_list(tokenized_rows)
 
     @staticmethod
