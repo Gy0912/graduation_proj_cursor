@@ -4,14 +4,14 @@
 
 QLoRA DPO 训练在 step 6-10 发生典型坍缩：
 
-| Step | loss | grad_norm | entropy | logps/chosen | logits/chosen |
-|------|------|-----------|---------|-------------|---------------|
-| 0 | 9.379 | 12.48 | 9.162 | -900.4 | 15.35 |
-| 6 | 5.218 | 16.22 | 9.098 | -876.1 | 15.13 |
-| 8 | 2.928 | 7.777 | 8.717 | -851.8 | 14.22 |
-| 9 | 2.04 | 0.00018 | 8.572 | -797.5 | 13.94 |
-| 10 | 2.14 | **0** | **7.108** | -1213 | 9.955 |
-| 11 | 2.5e-05 | **0** | **1.305** | -2556 | 1.146 |
+| Step | loss    | grad_norm | entropy   | logps/chosen | logits/chosen |
+| ---- | ------- | --------- | --------- | ------------ | ------------- |
+| 0    | 9.379   | 12.48     | 9.162     | -900.4       | 15.35         |
+| 6    | 5.218   | 16.22     | 9.098     | -876.1       | 15.13         |
+| 8    | 2.928   | 7.777     | 8.717     | -851.8       | 14.22         |
+| 9    | 2.04    | 0.00018   | 8.572     | -797.5       | 13.94         |
+| 10   | 2.14    | **0**     | **7.108** | -1213        | 9.955         |
+| 11   | 2.5e-05 | **0**     | **1.305** | -2556        | 1.146         |
 
 坍缩路径: logps 爆炸(-900→-2600) → logits 崩溃(15→1) → entropy 暴跌(9→1.3) → grad_norm 归零
 
@@ -53,46 +53,46 @@ trainer = StableDPOTrainer(model=model, ref_model=ref_model, ...)
 
 ### 2. 超参调整
 
-| 参数 | 旧值 | 新值 | 原因 |
-|------|------|------|------|
-| `dpo.beta` | 0.5 | **5.0** | 10× KL 约束 |
-| `learning_rate_dpo` | 2e-7 | **5e-8** | 4× 降速 |
-| `max_grad_norm` | 0.5/1.0 | **0.3** | 严格裁剪 |
-| `warmup_ratio` | 0.03/0.1 | **0.2** | 更长预热 |
+| 参数                | 旧值     | 新值     | 原因        |
+| ------------------- | -------- | -------- | ----------- |
+| `dpo.beta`          | 0.5      | **5.0**  | 10× KL 约束 |
+| `learning_rate_dpo` | 2e-7     | **5e-8** | 4× 降速     |
+| `max_grad_norm`     | 0.5/1.0  | **0.3**  | 严格裁剪    |
+| `warmup_ratio`      | 0.03/0.1 | **0.2**  | 更长预热    |
 
 ### 3. DPO 坍缩检测回调（DpoCollapseGuardCallback）
 
 新增 `stable_dpo_trainer.py::DpoCollapseGuardCallback`：
 
-| 信号 | 阈值 | 含义 |
-|------|------|------|
+| 信号            | 阈值                    | 含义    |
+| --------------- | ----------------------- | ------- |
 | `entropy < 3.0` | 模型 token 分布完全崩塌 |
-| `|logps/chosen| > 2000` | log 概率爆炸 |
-| `|logits/chosen| < 5.0` | logits 崩溃 |
+| `               | logps/chosen            | > 2000` | log 概率爆炸 |
+| `               | logits/chosen           | < 5.0`  | logits 崩溃  |
 
 任一触发 → 立即停止训练 + 保存当前 checkpoint。
 
 ## 预期效果
 
-| 指标 | 修复前 | 修复后（预期） |
-|------|--------|----------------|
-| 初始 loss | 9.38 (异常) | ~0.69 (与 ref 一致) |
-| 初始 logps/chosen | -900 (异常) | -50 ~ -150 (正常) |
-| entropy 最低值 | 1.2 (完全坍缩) | > 5.0 (正常) |
-| grad_norm 波动 | 0 ~ 41 | 0.01 ~ 0.5 (稳定) |
-| rewards/margins 终值 | +47 (发散) | 1 ~ 3 (收敛) |
-| 训练崩溃 | step 10 | 不崩溃 |
+| 指标                 | 修复前         | 修复后（预期）      |
+| -------------------- | -------------- | ------------------- |
+| 初始 loss            | 9.38 (异常)    | ~0.69 (与 ref 一致) |
+| 初始 logps/chosen    | -900 (异常)    | -50 ~ -150 (正常)   |
+| entropy 最低值       | 1.2 (完全坍缩) | > 5.0 (正常)        |
+| grad_norm 波动       | 0 ~ 41         | 0.01 ~ 0.5 (稳定)   |
+| rewards/margins 终值 | +47 (发散)     | 1 ~ 3 (收敛)        |
+| 训练崩溃             | step 10        | 不崩溃              |
 
 ## 改动的文件
 
-| 文件 | 操作 | 说明 |
-|------|------|------|
-| `training/dpo_train.py` | 修改 | 显式加载独立 ref_model；beta=5.0；max_grad_norm=0.3；max_prompt_length |
-| `training/train_qlora_dpo.py` | 修改 | 同上（QLoRA 版本） |
-| `training/stable_dpo_trainer.py` | 修改 | 新增 DpoCollapseGuardCallback（熵/logps/logits 三层坍缩检测） |
-| `configs/default.yaml` | 修改 | beta 0.5→5.0；LR 2e-7→5e-8；max_grad_norm 0.5→0.3；warmup 0.1→0.2 |
-| `configs/dpo.yaml` | 修改 | beta 0.5→5.0；新增 max_prompt_length |
-| `logs/changelog_2026-05-11_dpo_collapse_root_cause_fix.md` | **新建** | 本文件 |
+| 文件                                                       | 操作     | 说明                                                                   |
+| ---------------------------------------------------------- | -------- | ---------------------------------------------------------------------- |
+| `training/dpo_train.py`                                    | 修改     | 显式加载独立 ref_model；beta=5.0；max_grad_norm=0.3；max_prompt_length |
+| `training/train_qlora_dpo.py`                              | 修改     | 同上（QLoRA 版本）                                                     |
+| `training/stable_dpo_trainer.py`                           | 修改     | 新增 DpoCollapseGuardCallback（熵/logps/logits 三层坍缩检测）          |
+| `configs/default.yaml`                                     | 修改     | beta 0.5→5.0；LR 2e-7→5e-8；max_grad_norm 0.5→0.3；warmup 0.1→0.2      |
+| `configs/dpo.yaml`                                         | 修改     | beta 0.5→5.0；新增 max_prompt_length                                   |
+| `logs/changelog_2026-05-11_dpo_collapse_root_cause_fix.md` | **新建** | 本文件                                                                 |
 
 ### 不变更文件
 - `dataset/` · `evaluation/` · `detection/` · `tests/` — 零改动
