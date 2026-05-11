@@ -72,7 +72,9 @@
 
 > 2026-05-10 **关键修复（三十四）Driver 多样化验证**：验证 v2 模板库 7 种 driver 分布满足目标（pymysql 22%、sqlite3 20%、sqlalchemy 23%、psycopg2 15%、mysql-connector 9%、aiomysql/asyncpg 各 5%），全部在 10-25% 范围内。每种 driver 使用独特的 API 风格和占位符模式（`%s`/`?`/`:named`/`$1`），模型可以从 import 行准确推断占位符类型。详见 `logs/changelog_2026-05-10_driver_diversity_verification.md`。
 
-> 2026-05-10 **关键修复（三十五）DPO 偏好对同构化与难度分层**：新增 `_verify_dpo_isomorphism()` AST 级验证——每对 chosen/rejected 的 import/函数签名/变量名 100% 一致，仅 SQL 构造方式不同。按攻击类型分三层（Easy 30%/Medium 40%/Hard 30%）：string_concat→Easy, fstring/format_string→Medium, fake_sanitization/parameterized_query/orm_misuse/indirect_injection→Hard。扩展对数从 ~1100→**2000**。isomorphism 验证率 100%。详见 `logs/changelog_2026-05-10_dpo_isomorphism_fix.md`。
+> 2026-05-10 **关键修复（三十五）DPO 偏好对同构化与难度分层**：新增 `_verify_dpo_isomorphism()` AST 级验证——每对 chosen/rejected 的 import/函数签名/变量名 100% 一致，仅 SQL 构造方式不同。按攻击类型分三层（Easy 30%/Medium 40%/Hard 30%）。扩展对数从 ~1100→**2000**。详见 `logs/changelog_2026-05-10_dpo_isomorphism_fix.md`。
+
+> 2026-05-11 **关键修复（三十六）DPO 训练崩溃根因修复**：QLoRA DPO 在 step 6-10 发生典型坍缩（logps -900→-2600, entropy 9→1.3, grad_norm→0）。四层根因：① 4bit 量化的 ref_model 复制不一致导致初始 loss 9.38（正常应为 0.69）；② beta=0.5 过弱无法约束坍缩；③ 无熵/梯度监控；④ max_grad_norm=0.5 不足。修复：① 显式加载独立 ref_model（避免 4bit 复制不一致）；② beta 0.5→5.0 + LR 2e-7→5e-8 + max_grad_norm 0.5→0.3 + warmup 0.1→0.2；③ 新增 DpoCollapseGuardCallback（entropy/logps/logits 三层坍缩检测即时停训）。详见 `logs/changelog_2026-05-11_dpo_collapse_root_cause_fix.md`。
 
 ### Extraction Contract (2026-05-01)
 
@@ -99,9 +101,12 @@ Failure handling:
 
 ## 项目结构
 
+更深入的全景说明（**摘要、威胁模型、符号与形式化指标、端到端数据流、DPO/SFT/detection 方法分解**；**不涉及具体实验数值**）：见仓库根目录 [**`CODEBASE_DETAILED_OVERVIEW.md`（论文级扩写）**](CODEBASE_DETAILED_OVERVIEW.md)。
+
 ```
 project_root/
 ├── README.md                        # 本文件：项目总说明
+├── CODEBASE_DETAILED_OVERVIEW.md   # 代码库详细说明（架构、流程、方法索引）
 ├── PROJECT_STRUCTURE.md             # 目录树与模块职责
 ├── requirements.txt                 # Python 依赖
 ├── configs/                         # 运行配置（default / default_run / default_bandit_only_run / dpo）

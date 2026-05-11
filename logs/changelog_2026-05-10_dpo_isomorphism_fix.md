@@ -15,11 +15,11 @@ DPO 偏好对的核心要求：`chosen`（安全代码）和 `rejected`（脆弱
 
 新增函数对每对 chosen/rejected 做 AST 级验证：
 
-| 验证维度 | 方法 | 要求 |
-|----------|------|------|
-| Import 语句 | `ast.iter_child_nodes` 提取所有 import/from | 100% 一致 |
-| 函数签名 | 提取 FunctionDef 的 name + args.args | 100% 一致 |
-| 变量名 | 收集所有 `ast.Name` 节点 | chosen 的变量必须在 rejected 中存在 |
+| 验证维度    | 方法                                        | 要求                                |
+| ----------- | ------------------------------------------- | ----------------------------------- |
+| Import 语句 | `ast.iter_child_nodes` 提取所有 import/from | 100% 一致                           |
+| 函数签名    | 提取 FunctionDef 的 name + args.args        | 100% 一致                           |
+| 变量名      | 收集所有 `ast.Name` 节点                    | chosen 的变量必须在 rejected 中存在 |
 
 验证在 `build_dpo_pairs` 中作为最后一个门闸，不通过的对直接丢弃。
 
@@ -27,11 +27,11 @@ DPO 偏好对的核心要求：`chosen`（安全代码）和 `rejected`（脆弱
 
 攻击类型 → DPO 难度层级映射：
 
-| DPO 难度层 | 攻击类型 | 特征 | 目标占比 |
-|-----------|----------|------|----------|
-| Easy | `string_concat` | 明显拼接 vs 参数化 | 30% |
-| Medium | `fstring`, `format_string` | 微妙错误 vs 参数化 | 40% |
-| Hard | `fake_sanitization`, `parameterized_query`, `orm_misuse`, `indirect_injection` | 几乎正确 vs 完全正确 | 30% |
+| DPO 难度层 | 攻击类型                                                                       | 特征                 | 目标占比 |
+| ---------- | ------------------------------------------------------------------------------ | -------------------- | -------- |
+| Easy       | `string_concat`                                                                | 明显拼接 vs 参数化   | 30%      |
+| Medium     | `fstring`, `format_string`                                                     | 微妙错误 vs 参数化   | 40%      |
+| Hard       | `fake_sanitization`, `parameterized_query`, `orm_misuse`, `indirect_injection` | 几乎正确 vs 完全正确 | 30%      |
 
 ### 3. 扩展对数量 ≥2000
 
@@ -44,14 +44,14 @@ DPO 偏好对的核心要求：`chosen`（安全代码）和 `rejected`（脆弱
 
 ### 2200 行训练数据测试
 
-| 指标 | 结果 |
-|------|------|
-| 总对数 | **2000** ≥ 2000 ✓ |
+| 指标                      | 结果                   |
+| ------------------------- | ---------------------- |
+| 总对数                    | **2000** ≥ 2000 ✓      |
 | 同构性 (import+签名+变量) | **2000/2000 = 100%** ✓ |
-| Easy 占比 | 18% (目标 30%) |
-| Medium 占比 | 37% (目标 40%) |
-| Hard 占比 | 44% (目标 30%) |
-| 良性跳过 | 1100/2200 (50%) |
+| Easy 占比                 | 18% (目标 30%)         |
+| Medium 占比               | 37% (目标 40%)         |
+| Hard 占比                 | 44% (目标 30%)         |
+| 良性跳过                  | 1100/2200 (50%)        |
 
 ### 示例配对
 
@@ -78,10 +78,10 @@ def fetch_rows(conn, uid):
 
 ## 改动的文件
 
-| 文件 | 操作 | 说明 |
-|------|------|------|
-| `dataset/generate_expanded_dataset.py` | 修改 | 新增 `_verify_dpo_isomorphism`；新增 `_DPO_DIFFICULTY_TIER` 难度映射；新增 `_DPO_TIER_TARGETS` 目标分布；`build_dpo_pairs` 重写为分层多对生成；移除 `_validate_dpo_pair_structure` 调用；增加后处理采样 |
-| `logs/changelog_2026-05-10_dpo_isomorphism_fix.md` | **新建** | 本文件 |
+| 文件                                               | 操作     | 说明                                                                                                                                                                                                    |
+| -------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `dataset/generate_expanded_dataset.py`             | 修改     | 新增 `_verify_dpo_isomorphism`；新增 `_DPO_DIFFICULTY_TIER` 难度映射；新增 `_DPO_TIER_TARGETS` 目标分布；`build_dpo_pairs` 重写为分层多对生成；移除 `_validate_dpo_pair_structure` 调用；增加后处理采样 |
+| `logs/changelog_2026-05-10_dpo_isomorphism_fix.md` | **新建** | 本文件                                                                                                                                                                                                  |
 
 ### 不变更文件
 - `dataset/template_bank.py` · `dataset/adversarial.py` · `training/` · `evaluation/` · `detection/` · `tests/` — 零改动

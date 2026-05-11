@@ -39,13 +39,13 @@ HuggingFace Trainer / TRL 虽然支持 `eval_steps` + `eval_strategy="steps"`，
 
 **`EarlyStoppingCallback`**（`TrainerCallback` 子类）：
 
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `patience` | 5 | 连续 val_loss 未改善步数后停止 |
-| `min_delta` | 1e-4 | 改善的最小绝对变化量 |
-| `overfit_warn_threshold` | 0.5 | train_loss/val_loss 低于此值触发过拟合警告 |
-| `overfit_warn_patience` | 3 | 连续恶化步数才打印过拟合警告（抑制噪声） |
-| `save_best` | true | 每次 val_loss 创历史新低时保存到 `best_checkpoint/` |
+| 参数                     | 默认值 | 说明                                                |
+| ------------------------ | ------ | --------------------------------------------------- |
+| `patience`               | 5      | 连续 val_loss 未改善步数后停止                      |
+| `min_delta`              | 1e-4   | 改善的最小绝对变化量                                |
+| `overfit_warn_threshold` | 0.5    | train_loss/val_loss 低于此值触发过拟合警告          |
+| `overfit_warn_patience`  | 3      | 连续恶化步数才打印过拟合警告（抑制噪声）            |
+| `save_best`              | true   | 每次 val_loss 创历史新低时保存到 `best_checkpoint/` |
 
 **`on_evaluate` 行为：**
 1. 提取 `eval_loss` 和最近 `train_loss`
@@ -102,15 +102,15 @@ early_stopping:
 
 ## 改动的文件
 
-| 文件 | 操作 | 说明 |
-|------|------|------|
-| `training/early_stopping.py` | **新建** | EarlyStoppingCallback + resolve_best_sft_checkpoint + print_early_stop_summary |
-| `training/train_lora_sft.py` | 修改 | 集成 EarlyStoppingCallback；训练后在 best_checkpoint/ 独立保存 |
-| `training/train_qlora_sft.py` | 修改 | 同上（QLoRA 版本） |
-| `training/dpo_train.py` | 修改 | DPO 从 resolve_best_sft_checkpoint() 加载（最佳 > 最终） |
-| `training/train_qlora_dpo.py` | 修改 | 同上（QLoRA 版本） |
-| `configs/default.yaml` | 修改 | 新增 training.early_stopping 配置段 |
-| `logs/changelog_2026-05-10_early_stopping.md` | **新建** | 本文件 |
+| 文件                                          | 操作     | 说明                                                                           |
+| --------------------------------------------- | -------- | ------------------------------------------------------------------------------ |
+| `training/early_stopping.py`                  | **新建** | EarlyStoppingCallback + resolve_best_sft_checkpoint + print_early_stop_summary |
+| `training/train_lora_sft.py`                  | 修改     | 集成 EarlyStoppingCallback；训练后在 best_checkpoint/ 独立保存                 |
+| `training/train_qlora_sft.py`                 | 修改     | 同上（QLoRA 版本）                                                             |
+| `training/dpo_train.py`                       | 修改     | DPO 从 resolve_best_sft_checkpoint() 加载（最佳 > 最终）                       |
+| `training/train_qlora_dpo.py`                 | 修改     | 同上（QLoRA 版本）                                                             |
+| `configs/default.yaml`                        | 修改     | 新增 training.early_stopping 配置段                                            |
+| `logs/changelog_2026-05-10_early_stopping.md` | **新建** | 本文件                                                                         |
 
 ### 不变更文件
 - `detection/`：检测逻辑零改动
@@ -122,12 +122,12 @@ early_stopping:
 
 ## 验证方式
 
-| 验证步骤 | 通过标准 |
-|----------|----------|
-| 在低熵原训练集（唯一率 25.7%）上运行 SFT | 早停在 epoch 0.5-0.8 左右触发 |
-| 确认早停 checkpoint 的 val_loss < 最终 checkpoint | val_loss 差值 >0.05 |
-| 从早停 checkpoint 启动 DPO | DPO loss 正常下降，无 NaN |
-| 在修复后高熵训练集（唯一率 ≥90%）上运行 SFT | 早停不触发（或触发在接近 1 epoch 处），模型正常完成训练 |
+| 验证步骤                                          | 通过标准                                                |
+| ------------------------------------------------- | ------------------------------------------------------- |
+| 在低熵原训练集（唯一率 25.7%）上运行 SFT          | 早停在 epoch 0.5-0.8 左右触发                           |
+| 确认早停 checkpoint 的 val_loss < 最终 checkpoint | val_loss 差值 >0.05                                     |
+| 从早停 checkpoint 启动 DPO                        | DPO loss 正常下降，无 NaN                               |
+| 在修复后高熵训练集（唯一率 ≥90%）上运行 SFT       | 早停不触发（或触发在接近 1 epoch 处），模型正常完成训练 |
 
 ## 兼容性
 

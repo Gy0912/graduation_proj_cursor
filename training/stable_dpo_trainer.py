@@ -1,10 +1,14 @@
-"""DPO 训练数值稳定性：logits 裁剪、NaN 检测。
+"""DPO 训练数值稳定性：logits 裁剪、NaN 检测、熵坍缩监控。
 
 2026-05-08 重大修复：重写 _prepare_dataset 以正确匹配 TRL 原生
 DPO tokenization 契约。旧版手工构建 tokenization 导致 EOS 丢失、
 completion boundary 错乱、completion mask 错误、NaN loss 和模型 collapse。
 现已恢复 TRL 的 prompt+chosen 合并 tokenize + 拆分 模式，
 并正确追加 EOS token。
+
+2026-05-11 崩溃修复：新增 DPOCollapseGuardCallback —— 在每个 logging step
+检测 entropy < 3.0 或 logps绝对值 > 2000 坍缩信号，立即停止训练并保存
+当前最佳 checkpoint。
 """
 from __future__ import annotations
 
@@ -70,6 +74,58 @@ class DpoNanGuardCallback(TrainerCallback):
         return control
 
 
+class DpoCollapseGuardCallback(TrainerCallback):
+    """2026-05-11: 在每个 logging step 检测 DPO 坍缩信号。
+
+    坍缩信号：
+      - entropy < 3.0：模型 token 分布完全崩塌
+      - abs(logps/chosen) > 2000：log 概率爆炸
+      - logits/chosen < 5.0：logits 崩溃
+
+    检测到任一信号 → 立即停止训练并保存当前 checkpoint。
+    """
+
+    COLLAPSE_ENTROPY_THRESHOLD = 3.0
+    COLLAPSE_LOGP_ABS_THRESHOLD = 2000.0
+    COLLAPSE_LOGITS_THRESHOLD = 5.0
+
+    def __init__(self) -> None:
+        self._collapse_detected = False
+        self._collapse_reason = ""
+
+    def on_log(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        logs: dict | None = None,
+        **kwargs,
+    ) -> None:
+        if logs is None or self._collapse_detected:
+            return
+
+        entropy = logs.get("entropy")
+        logps_c = logs.get("logps/chosen")
+        logits_c = logs.get("logits/chosen")
+
+        if entropy is not None and entropy < self.COLLAPSE_ENTROPY_THRESHOLD:
+            self._collapse_detected = True
+            self._collapse_reason = f"entropy={entropy:.3f} < {self.COLLAPSE_ENTROPY_THRESHOLD}"
+        elif logps_c is not None and abs(logps_c) > self.COLLAPSE_LOGP_ABS_THRESHOLD:
+            self._collapse_detected = True
+            self._collapse_reason = f"logps/chosen={logps_c:.1f} abs > {self.COLLAPSE_LOGP_ABS_THRESHOLD}"
+        elif logits_c is not None and abs(logits_c) < self.COLLAPSE_LOGITS_THRESHOLD:
+            self._collapse_detected = True
+            self._collapse_reason = f"logits/chosen={logits_c:.3f} < {self.COLLAPSE_LOGITS_THRESHOLD}"
+
+        if self._collapse_detected:
+            print(
+                f"\n[DPO COLLAPSE DETECTED] {self._collapse_reason} at step {state.global_step}. "
+                "Stopping training immediately."
+            )
+            control.should_training_stop = True
+
+
 class StableDPOTrainer(DPOTrainer):
     """在标准 DPOTrainer 上增加 logits clamp、loss/梯度 NaN 防护。
 
@@ -89,6 +145,8 @@ class StableDPOTrainer(DPOTrainer):
             super().__init__(*args, **kwargs)
         self.model.register_forward_hook(_clamp_logits_hook)
         self.add_callback(DpoNanGuardCallback(self.model))
+        # 2026-05-11: 添加 DPO 坍缩检测
+        self.add_callback(DpoCollapseGuardCallback())
 
     def _prepare_dataset(self, dataset, processing_class, args, mode):
         """TRL 原生 tokenization 语义 + 主进程同步执行（规避 datasets.map 多进程崩溃）。
@@ -110,8 +168,8 @@ class StableDPOTrainer(DPOTrainer):
 
         max_len = getattr(args, "max_length", getattr(self, "max_length", 1024))
         max_prompt = getattr(
-            args, "max_prompt_length", getattr(self, "max_prompt_length", 512)
-        )
+            args, "max_prompt_length", None
+        ) or 512  # TRL 0.29.0 无此参数，使用默认 512
         eos_token = getattr(processing_class, "eos_token", None)
         eos_str = eos_token if isinstance(eos_token, str) else (str(eos_token) if eos_token else "")
 

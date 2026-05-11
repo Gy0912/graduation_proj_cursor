@@ -74,16 +74,19 @@ training:
   disable_amp: true
   fp16: false
   bf16: false
-  max_grad_norm: 0.5
+  # 2026-05-11: max_grad_norm 0.5→0.3 — 更严格梯度裁剪防止DPO梯度爆炸
+  max_grad_norm: 0.3
   dataloader_num_workers: 2
   dataloader_pin_memory: true
   # 2026-05-09 修复 SFT 过拟合：降低 LR (2e-4→1e-4)、减少 epoch (2→1)
   # 过拟合→DPO崩溃根因见 logs/changelog_2026-05-09_sft_overfit_dpo_collapse.md
   learning_rate_sft: 1.0e-4
-  learning_rate_dpo: 2.0e-7
+  # 2026-05-11: DPO LR 2e-7→5e-8 — 配合 beta=5.0 做极微更新
+  learning_rate_dpo: 5.0e-8
   num_train_epochs_sft: 1
   num_train_epochs_dpo: 1
-  warmup_ratio: 0.1
+  # 2026-05-11: warmup 0.1→0.2 — DPO需要更长预热防止初始步崩塌
+  warmup_ratio: 0.2
   logging_steps: 10
   save_steps: 100
   eval_steps: 100
@@ -107,10 +110,10 @@ training:
     save_best: true             # 是否保存最佳 checkpoint 到 best_checkpoint/ 目录
 
 dpo:
-  # 2026-05-09 P0 FIX: beta 0.1→0.5 — 加强KL约束防止过拟合SFT模型在DPO中分布崩溃
-  beta: 0.5
+  # 2026-05-11 P0 FIX: beta 0.5→5.0 — 强KL约束防止SFT→DPO分布崩溃。
+  # 当前SFT模型与baseline接近（无训练痕迹），beta=5.0确保DPO仅做微调不崩塌。
+  beta: 5.0
   max_length: 1024
-  max_prompt_length: 512
 
 outputs:
   # 恒安全输出对照（不加载 LLM）：用于验证 classification_vs_expected / recall_vulnerable

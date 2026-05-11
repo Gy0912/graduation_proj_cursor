@@ -25,19 +25,19 @@
 
 ### 56 模板分类
 
-| 类别 | 数量 | 结构特征 |
-|------|------|----------|
-| A: 基础参数化查询 | 6 | 不同 driver + cursor API + fetch 模式 |
-| B: try/except 错误处理 | 6 | try/except/finally 各模式 |
-| C: 输入验证 | 6 | isinstance/regex/assert/early-return |
-| D: 多函数编排 | 6 | 辅助函数链 + dispatch dict |
-| E: 类封装 | 8 | \_\_init\_\_ + 方法 + \_\_slots\_\_ + cache + ORM |
-| F: 上下文管理器 | 5 | contextmanager/closing/session.begin/自定义 |
-| G: 装饰器模式 | 5 | @wraps + 参数化装饰器 + 重试逻辑 |
-| H: 异步模式 | 5 | async with + await + pool.acquire + prepare |
-| I: 生成器 | 3 | yield + yield from + row iteration |
-| J: closure/partial | 3 | 内嵌函数 + functools.partial |
-| K: Core SQLAlchemy | 3 | Table/MetaData + engine.connect + bind.execute |
+| 类别                   | 数量 | 结构特征                                          |
+| ---------------------- | ---- | ------------------------------------------------- |
+| A: 基础参数化查询      | 6    | 不同 driver + cursor API + fetch 模式             |
+| B: try/except 错误处理 | 6    | try/except/finally 各模式                         |
+| C: 输入验证            | 6    | isinstance/regex/assert/early-return              |
+| D: 多函数编排          | 6    | 辅助函数链 + dispatch dict                        |
+| E: 类封装              | 8    | \_\_init\_\_ + 方法 + \_\_slots\_\_ + cache + ORM |
+| F: 上下文管理器        | 5    | contextmanager/closing/session.begin/自定义       |
+| G: 装饰器模式          | 5    | @wraps + 参数化装饰器 + 重试逻辑                  |
+| H: 异步模式            | 5    | async with + await + pool.acquire + prepare       |
+| I: 生成器              | 3    | yield + yield from + row iteration                |
+| J: closure/partial     | 3    | 内嵌函数 + functools.partial                      |
+| K: Core SQLAlchemy     | 3    | Table/MetaData + engine.connect + bind.execute    |
 
 ### 唯一关键字标记
 
@@ -45,40 +45,40 @@
 
 ### 池扩展
 
-| 池 | 数量 |
-|----|------|
-| 函数名 | 132 |
-| 变量名 | 50 |
-| 表名/列名组合 | 31 |
+| 池            | 数量 |
+| ------------- | ---- |
+| 函数名        | 132  |
+| 变量名        | 50   |
+| 表名/列名组合 | 31   |
 
 ## 验证结果
 
 ### Canonicalized（规范骨架）测试
 
-| 指标 | 修复前 | 修复后 |
-|------|--------|--------|
-| 规范骨架数量 | 35 | **56** |
-| 最大 token 重叠度 (canonical) | 0.97 | 0.94 |
-| 相同骨架对 (overlap=1.0) | 有 | **0** |
+| 指标                          | 修复前 | 修复后 |
+| ----------------------------- | ------ | ------ |
+| 规范骨架数量                  | 35     | **56** |
+| 最大 token 重叠度 (canonical) | 0.97   | 0.94   |
+| 相同骨架对 (overlap=1.0)      | 有     | **0**  |
 
 ### 实际使用测试（含函数名/变量名/表名/关键字标记）
 
-| 指标 | 结果 |
-|------|------|
-| 最大 token 重叠度 | **0.6364** (< 0.70 ✓) |
-| 平均 token 重叠度 | 0.3163 |
-| 高重叠对 (>0.70) | **0** ✓ |
-| 唯一输出率 (56 样本) | **56/56 = 100%** |
-| 所有模板 AST 可解析 | ✓ |
-| 所有模板无脆弱 SQL 模式 | ✓ |
+| 指标                    | 结果                  |
+| ----------------------- | --------------------- |
+| 最大 token 重叠度       | **0.6364** (< 0.70 ✓) |
+| 平均 token 重叠度       | 0.3163                |
+| 高重叠对 (>0.70)        | **0** ✓               |
+| 唯一输出率 (56 样本)    | **56/56 = 100%**      |
+| 所有模板 AST 可解析     | ✓                     |
+| 所有模板无脆弱 SQL 模式 | ✓                     |
 
 ## 改动的文件
 
-| 文件 | 操作 | 说明 |
-|------|------|------|
-| `dataset/template_bank.py` | **完全重写** | 56 个独立模板 + 唯一关键字标记 + 池扩展 |
-| `dataset/generate_expanded_dataset.py` | 不变 | API 向后兼容 |
-| `logs/changelog_2026-05-10_template_v2_rewrite.md` | **新建** | 本文件 |
+| 文件                                               | 操作         | 说明                                    |
+| -------------------------------------------------- | ------------ | --------------------------------------- |
+| `dataset/template_bank.py`                         | **完全重写** | 56 个独立模板 + 唯一关键字标记 + 池扩展 |
+| `dataset/generate_expanded_dataset.py`             | 不变         | API 向后兼容                            |
+| `logs/changelog_2026-05-10_template_v2_rewrite.md` | **新建**     | 本文件                                  |
 
 ### 不变更文件
 `detection/` / `evaluation/` / `training/` / `scripts/` / `tests/` — 零改动

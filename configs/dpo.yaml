@@ -15,6 +15,6 @@ training:
   save_steps: 200
 
 dpo:
-  # 2026-05-09: beta 保持 0.5（与 default.yaml 一致）——防止DPO分布崩溃
-  beta: 0.5
+  # 2026-05-11 P0 FIX: beta 0.5→5.0 — 强KL约束防止SFT→DPO分布崩溃
+  beta: 5.0
   max_length: 1024

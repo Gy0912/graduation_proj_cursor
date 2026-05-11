@@ -103,15 +103,15 @@ def run_qlora_dpo(config_path: str) -> None:
         gradient_accumulation_steps=int(tcfg.get("grad_accum", 8)),
         learning_rate=float(tcfg["learning_rate_dpo"]),
         num_train_epochs=float(tcfg["num_train_epochs_dpo"]),
-        warmup_ratio=float(tcfg.get("warmup_ratio", 0.03)),
+        warmup_ratio=float(tcfg.get("warmup_ratio", 0.1)),
         logging_steps=int(tcfg.get("logging_steps", 10)),
         save_steps=int(tcfg.get("save_steps", 200)),
         save_strategy="steps",
         bf16=False,
         fp16=False,
-        max_grad_norm=1.0,
+        max_grad_norm=0.3,  # 2026-05-11: 1.0→0.3 更严格裁剪
         max_length=max_len,
-        beta=float(dcfg.get("beta", 0.1)),
+        beta=float(dcfg.get("beta", 5.0)),  # 2026-05-11: 0.1→5.0
         precompute_ref_log_probs=True,
         precompute_ref_batch_size=1,
         dataset_num_proc=1,
@@ -122,9 +122,18 @@ def run_qlora_dpo(config_path: str) -> None:
         gradient_checkpointing=True,
     )
 
+    # 2026-05-11: 加载独立 ref_model（避免 4bit 量化下的 ref/policy 不一致）
+    ref_model = AutoModelForCausalLM.from_pretrained(
+        base, trust_remote_code=True, dtype=torch.float16,
+        quantization_config=quant, device_map="auto",
+    )
+    ref_model = PeftModel.from_pretrained(ref_model, str(sft_adapter_dir), is_trainable=False)
+    for p in ref_model.parameters():
+        p.requires_grad = False
+
     trainer = StableDPOTrainer(
         model=model,
-        ref_model=None,
+        ref_model=ref_model,
         args=dpo_args,
         train_dataset=train_ds,
         processing_class=tok,

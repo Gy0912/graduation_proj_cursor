@@ -116,7 +116,7 @@ def main() -> None:
     cast_trainable_bf16_to_float16(model)
 
     max_len = int(dcfg.get("max_length", 1024))
-    beta = float(dcfg.get("beta", 0.5))  # 2026-05-09: 回退=0.5 防止过拟合SFT→DPO崩溃
+    beta = float(dcfg.get("beta", 5.0))  # 2026-05-11: beta 0.5→5.0 防止 DPO 崩溃
 
     dpo_args = DPOConfig(
         output_dir=str(out_dir),
@@ -124,13 +124,13 @@ def main() -> None:
         gradient_accumulation_steps=int(tcfg.get("grad_accum", 8)),
         learning_rate=float(tcfg["learning_rate_dpo"]),
         num_train_epochs=float(tcfg["num_train_epochs_dpo"]),
-        warmup_ratio=float(tcfg.get("warmup_ratio", 0.03)),
+        warmup_ratio=float(tcfg.get("warmup_ratio", 0.1)),
         logging_steps=int(tcfg.get("logging_steps", 10)),
         save_steps=int(tcfg.get("save_steps", 200)),
         save_strategy="steps",
         bf16=False,
         fp16=False,
-        max_grad_norm=0.5,  # 2026-05-08: 降低到 0.5 防止 DPO step~60 梯度爆炸
+        max_grad_norm=0.3,  # 2026-05-11: 0.5→0.3 更严格的梯度裁剪
         max_length=max_len,
         beta=beta,
         precompute_ref_log_probs=True,
@@ -143,9 +143,24 @@ def main() -> None:
         gradient_checkpointing=True,
     )
 
+    # 2026-05-11: 加载独立的 ref_model（避免 4bit 量化下的 ref/policy 不一致）
+    # 当 ref_model=None 时 TRL 会内部复制 policy 模型，但 4bit 量化的复制可能
+    # 导致 ref logits 与 policy 初始 logits 不同，引起初始 DPO loss 爆炸。
+    ref_model = AutoModelForCausalLM.from_pretrained(
+        base,
+        trust_remote_code=True,
+        dtype=torch.float16,
+        quantization_config=quant,
+        device_map="auto",
+    )
+    ref_model = PeftModel.from_pretrained(ref_model, str(sft_adapter_dir), is_trainable=False)
+    # 冻结 ref model
+    for p in ref_model.parameters():
+        p.requires_grad = False
+
     trainer = StableDPOTrainer(
         model=model,
-        ref_model=None,
+        ref_model=ref_model,
         args=dpo_args,
         train_dataset=train_ds,
         processing_class=tok,
