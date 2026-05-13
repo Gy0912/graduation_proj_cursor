@@ -1,0 +1,10 @@
+ablation:
+  group: B
+  name: "No DPO"
+
+# 消融实验 B: No DPO
+# 仅 SFT，不运行 DPO 训练。
+# 验证 DPO 对最终性能的独立贡献。
+
+training:
+  num_train_epochs_dpo: 0

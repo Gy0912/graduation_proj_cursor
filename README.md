@@ -74,7 +74,9 @@
 
 > 2026-05-10 **关键修复（三十五）DPO 偏好对同构化与难度分层**：新增 `_verify_dpo_isomorphism()` AST 级验证——每对 chosen/rejected 的 import/函数签名/变量名 100% 一致，仅 SQL 构造方式不同。按攻击类型分三层（Easy 30%/Medium 40%/Hard 30%）。扩展对数从 ~1100→**2000**。详见 `logs/changelog_2026-05-10_dpo_isomorphism_fix.md`。
 
-> 2026-05-11 **关键修复（三十六）DPO 训练崩溃根因修复**：QLoRA DPO 在 step 6-10 发生典型坍缩（logps -900→-2600, entropy 9→1.3, grad_norm→0）。四层根因：① 4bit 量化的 ref_model 复制不一致导致初始 loss 9.38（正常应为 0.69）；② beta=0.5 过弱无法约束坍缩；③ 无熵/梯度监控；④ max_grad_norm=0.5 不足。修复：① 显式加载独立 ref_model（避免 4bit 复制不一致）；② beta 0.5→5.0 + LR 2e-7→5e-8 + max_grad_norm 0.5→0.3 + warmup 0.1→0.2；③ 新增 DpoCollapseGuardCallback（entropy/logps/logits 三层坍缩检测即时停训）。详见 `logs/changelog_2026-05-11_dpo_collapse_root_cause_fix.md`。
+> 2026-05-11 **关键修复（三十六）DPO 训练崩溃根因修复**：QLoRA DPO 在 step 6-10 发生典型坍缩。四层根因：① 4bit 量化 ref_model 复制不一致；② beta=0.5 过弱；③ 无监控；④ max_grad_norm 不足。修复：显式 ref_model、beta→5.0、DpoCollapseGuardCallback。详见 `logs/changelog_2026-05-11_dpo_collapse_root_cause_fix.md`。
+
+> 2026-05-11 **关键修复（三十七）消融实验与回归测试框架**：① `scripts/run_ablation.py` — 6 组消融实验全自动运行器（A-Full/B-NoDPO/C-OldTemplates/D-NoEarlyStop/E-LowBeta/F-Minimal）；② `scripts/compare_ablation.py` — 消融对比分析+图表生成；③ `configs/ablation/` — 6 组独立实验配置；④ `dataset/template_bank.py` 新增 `template_mode` 参数（full/basic）；⑤ `tests/test_regression_2026_05_11.py` — 18 条回归测试（模板多样性/driver分布/DPO同构/评测一致性/配置一致性）。详见 `logs/changelog_2026-05-11_ablation_regression.md`。
 
 ### Extraction Contract (2026-05-01)
 

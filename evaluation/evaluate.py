@@ -90,15 +90,24 @@ def main() -> None:
         default=None,
         help="若设置，将评测运行日志写入该目录（如 logs/experiments）",
     )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="覆盖输出 JSON 路径（默认从 config.outputs 读取，消融实验用）",
+    )
     args = parser.parse_args()
 
-    with open(ROOT / args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    # 2026-05-13: 合并 default.yaml（消融实验兼容）
+    from training.config_utils import load_merged_config
+    cfg = load_merged_config(ROOT, args.config)
 
     if args.log_dir:
         setup_file_logging(ROOT / args.log_dir, name=f"eval_{args.model}")
 
     adapter_path, load_in_4bit, output_path = resolve_eval_plan(cfg, args.model)
+    # 2026-05-14: 消融实验支持 — --output 覆盖默认路径
+    if args.output:
+        output_path = args.output
     if args.model != "always_safe_model" and adapter_path is not None and not (ROOT / adapter_path).exists():
         msg = (
             f"[WARN] adapter not found for {args.model}: {ROOT / adapter_path}. "

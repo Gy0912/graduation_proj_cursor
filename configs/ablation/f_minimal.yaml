@@ -1,0 +1,19 @@
+ablation:
+  group: F
+  name: "Minimal Baseline"
+  template_mode: basic
+
+# 消融实验 F: Minimal Baseline（最简基线）
+# 旧模板 + 无DPO + 无早停。
+# 验证所有优化组件的综合贡献。
+
+ablation:
+  template_mode: basic
+
+training:
+  num_train_epochs_dpo: 0
+  early_stopping:
+    enabled: false
+    patience: 100
+    min_delta: 0.0
+    save_best: false

@@ -41,6 +41,7 @@ import logging
 import random
 import re
 import sys
+import os
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2391,7 +2392,9 @@ def main() -> None:
 
     rng = random.Random(args.seed)
     used_keys: set[str] = set()
-    sampler = TemplateSampler(rng)
+    # 2026-05-11: 消融实验支持（ABLATION_TEMPLATE_MODE 环境变量）
+    template_mode = os.environ.get("ABLATION_TEMPLATE_MODE", "full")
+    sampler = TemplateSampler(rng, template_mode=template_mode)
 
     eval_ratio = float(args.eval_ratio)
     eval_n = int(round(num_samples * eval_ratio))

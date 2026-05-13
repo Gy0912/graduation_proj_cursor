@@ -267,3 +267,14 @@ outputs/plots/f1_conservative.png
 outputs/plots/f1_strict.png
 outputs/plots/sql_injection_rate_valid.png
 outputs/plots/fpr_fnr_valid.png
+
+消融实验
+python scripts/run_ablation.py --groups all --dry-run  # 预览
+python scripts/run_ablation.py --groups A B C D E F    # 全部运行
+python scripts/run_ablation.py --groups A              # 运行A组消融实验
+
+对比分析
+python scripts/compare_ablation.py
+
+回归测试
+pytest tests/test_regression_2026_05_11.py -v

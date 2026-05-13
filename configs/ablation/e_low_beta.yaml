@@ -1,0 +1,10 @@
+ablation:
+  group: E
+  name: "Low Beta DPO"
+
+# 消融实验 E: Low Beta DPO (beta=0.5)
+# 使用较小的 KL 约束。
+# 验证 beta=5.0 对防止 DPO 崩溃的贡献。
+
+dpo:
+  beta: 0.5

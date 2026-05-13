@@ -1,0 +1,15 @@
+ablation:
+  group: D
+  name: "No Early Stop"
+
+# 消融实验 D: No Early Stopping
+# 禁用 SFT 早停机制。
+# 验证早停对防止过拟合的贡献。
+
+training:
+  early_stopping:
+    enabled: false
+    patience: 100
+    min_delta: 0.0
+    overfit_warn_threshold: 0.0
+    save_best: false

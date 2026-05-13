@@ -1,0 +1,8 @@
+# 消融实验 A: Full Pipeline（全组件）
+ablation:
+  group: A
+  name: "Full Pipeline"
+# 继承 default.yaml 所有设置，不做任何覆盖。
+# v2模板库(56种) + 同构化2000对DPO + 早停 + beta=5.0
+#
+# 这是所有消融实验的基线对照组。

@@ -1,0 +1,12 @@
+ablation:
+  group: C
+  name: "Old Templates"
+  template_mode: basic
+
+# 消融实验 C: Old Templates（模拟旧版4模板）
+# 限制 TemplateSampler 仅使用基础模板类型，模拟旧版 v1 模板库。
+# 验证模板多样性对训练效果的贡献。
+
+ablation:
+  template_mode: basic
+  description: "Limit sampler to basic template types (function, try_except, validated)"

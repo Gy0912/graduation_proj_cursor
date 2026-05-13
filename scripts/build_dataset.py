@@ -39,6 +39,8 @@ def main() -> None:
 
     with open(Path(ROOT) / args.config, "r", encoding="utf-8") as f:
         cfg = yaml.safe_load(f)
+    from training.config_utils import load_merged_config as _lcm
+    cfg = _lcm(ROOT, args.config)
 
     ds = cfg["dataset"]
     files = cfg["files"]

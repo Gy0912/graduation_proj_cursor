@@ -2,16 +2,16 @@
 
 ## 一、当前训练结果全量对比
 
-| 指标 | baseline | lora_sft | lora_dpo | qlora_sft | qlora_dpo |
-|------|----------|----------|----------|-----------|-----------|
-| sql_injection_rate_valid | **0.131** | 0.143 | 0.149 | 0.145 | 0.171 |
-| extraction_failure_rate | 0.030 | 0.020 | 0.013 | 0.013 | 0.003 |
-| FPR (false_positive) | **0.137** | 0.138 | 0.143 | 0.143 | 0.181 |
-| TP | 18 | 22 | 23 | 22 | 24 |
-| FP | 20 | 20 | 21 | 21 | 27 |
-| TN | 126 | 125 | 126 | 126 | 122 |
-| FN | 127 | 127 | 126 | 127 | 126 |
-| F1_vulnerable | 0.197 | 0.230 | 0.238 | 0.229 | 0.239 |
+| 指标                     | baseline  | lora_sft | lora_dpo | qlora_sft | qlora_dpo |
+| ------------------------ | --------- | -------- | -------- | --------- | --------- |
+| sql_injection_rate_valid | **0.131** | 0.143    | 0.149    | 0.145     | 0.171     |
+| extraction_failure_rate  | 0.030     | 0.020    | 0.013    | 0.013     | 0.003     |
+| FPR (false_positive)     | **0.137** | 0.138    | 0.143    | 0.143     | 0.181     |
+| TP                       | 18        | 22       | 23       | 22        | 24        |
+| FP                       | 20        | 20       | 21       | 21        | 27        |
+| TN                       | 126       | 125      | 126      | 126       | 122       |
+| FN                       | 127       | 127      | 126      | 127       | 126       |
+| F1_vulnerable            | 0.197     | 0.230    | 0.238    | 0.229     | 0.239     |
 
 ### 核心结论
 
@@ -25,12 +25,12 @@
 
 ### 方案 A：换用更弱的模型（强烈推荐）
 
-| 候选模型 | 参数量 | 优势 | 预期 baseline 注入率 |
-|----------|--------|------|---------------------|
-| **Qwen2.5-Coder-0.5B** | 0.5B | 极小、易训、论文常见 | ~30-40%（可观察到训练效果） |
-| **CodeGen-350M-Mono** | 0.35B | Salesforce 出品、纯代码 | ~40-50% |
-| **Phi-2** | 2.7B | 微软、强推理但安全训练少 | ~25-30% |
-| **DeepSeek-Coder-1.3B** | 1.3B | 代码专项 | ~20-25% |
+| 候选模型                | 参数量 | 优势                     | 预期 baseline 注入率        |
+| ----------------------- | ------ | ------------------------ | --------------------------- |
+| **Qwen2.5-Coder-0.5B**  | 0.5B   | 极小、易训、论文常见     | ~30-40%（可观察到训练效果） |
+| **CodeGen-350M-Mono**   | 0.35B  | Salesforce 出品、纯代码  | ~40-50%                     |
+| **Phi-2**               | 2.7B   | 微软、强推理但安全训练少 | ~25-30%                     |
+| **DeepSeek-Coder-1.3B** | 1.3B   | 代码专项                 | ~20-25%                     |
 
 **首选 Qwen2.5-Coder-0.5B**：已有 `outputs/lora_sqlfix_qwen05b/` 目录表明团队已尝试——这是正确方向。
 
@@ -49,14 +49,14 @@
 
 ### 实验设计（6 组）
 
-| 实验组 | SFT数据 | DPO数据 | 早停 | 预期结论 |
-|--------|---------|---------|------|----------|
-| A: Full pipeline | v2模板库(56种) | 同构化2000对 | ✓ | 完整系统表现 |
-| B: 无DPO | v2模板库(56种) | 无 | ✓ | DPO的独立贡献 |
-| C: 旧模板 | v1模板(4种) | 旧1100对 | ✓ | 模板多样性的贡献 |
-| D: 无早停 | v2模板库(56种) | 同构化2000对 | ✗ | 早停机制的贡献 |
-| E: 低beta DPO | v2模板库(56种) | 同构化2000对beta=0.5 | ✓ | beta=5.0的贡献 |
-| F: 仅SFT基础 | v1模板(4种) | 无 | ✗ | 最简基线 |
+| 实验组           | SFT数据        | DPO数据              | 早停 | 预期结论         |
+| ---------------- | -------------- | -------------------- | ---- | ---------------- |
+| A: Full pipeline | v2模板库(56种) | 同构化2000对         | ✓    | 完整系统表现     |
+| B: 无DPO         | v2模板库(56种) | 无                   | ✓    | DPO的独立贡献    |
+| C: 旧模板        | v1模板(4种)    | 旧1100对             | ✓    | 模板多样性的贡献 |
+| D: 无早停        | v2模板库(56种) | 同构化2000对         | ✗    | 早停机制的贡献   |
+| E: 低beta DPO    | v2模板库(56种) | 同构化2000对beta=0.5 | ✓    | beta=5.0的贡献   |
+| F: 仅SFT基础     | v1模板(4种)    | 无                   | ✗    | 最简基线         |
 
 ### 运行方式
 
@@ -82,13 +82,13 @@ python training/dpo_train.py --config configs/dpo.yaml
 
 ### 测试用例设计（5 类 × 3 用例 = 15 条）
 
-| 测试类 | 验证内容 | 方法 |
-|--------|----------|------|
-| TemplateUniqueness | 唯一率 ≥ 90% | 运行 generate_expanded_dataset 后统计 count_unique_outputs |
-| DriverDistribution | pymysql < 35% | 运行后统计 compute_driver_distribution |
-| TokenDiversity | max_overlap < 0.70 | 运行 audit_token_diversity |
-| DpoIsomorphism | 100% 同构性 | 读取 dpo_pairs.json 对每对跑 _verify_dpo_isomorphism |
-| EarlyStopping | 早停在 epoch 0.3-0.8 触发 | 用低熵数据(旧模板)跑 SFT，验证早停触发 |
+| 测试类             | 验证内容                  | 方法                                                       |
+| ------------------ | ------------------------- | ---------------------------------------------------------- |
+| TemplateUniqueness | 唯一率 ≥ 90%              | 运行 generate_expanded_dataset 后统计 count_unique_outputs |
+| DriverDistribution | pymysql < 35%             | 运行后统计 compute_driver_distribution                     |
+| TokenDiversity     | max_overlap < 0.70        | 运行 audit_token_diversity                                 |
+| DpoIsomorphism     | 100% 同构性               | 读取 dpo_pairs.json 对每对跑 _verify_dpo_isomorphism       |
+| EarlyStopping      | 早停在 epoch 0.3-0.8 触发 | 用低熵数据(旧模板)跑 SFT，验证早停触发                     |
 
 ### 自动化回归脚本
 
@@ -117,12 +117,12 @@ def test_early_stopping_triggers():
 
 ## 五、残余问题评估
 
-| 问题 | 需要修复？ | 理由 |
-|------|-----------|------|
-| DPO 启动点修正 | **不需要** | 早停已保存 best_checkpoint；且当前 SFT≈baseline，最佳 checkpoint 即初始模型 |
+| 问题                | 需要修复？ | 理由                                                                                                                                                         |
+| ------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| DPO 启动点修正      | **不需要** | 早停已保存 best_checkpoint；且当前 SFT≈baseline，最佳 checkpoint 即初始模型                                                                                  |
 | fix-task INPUT 脱敏 | **不需要** | Input 中的脆弱代码是"Fix"任务的必须上下文，移除后任务语义丢失。当前 setup 中 80% fix 输出来自模板库（非对齐改写），prompt 中的脆弱代码不进入 training target |
-| 训练动力学监控 | **不需要** | 已通过 DpoCollapseGuardCallback + 早停覆盖 |
-| 快捷路径消除 | **不需要** | 已通过 beta=5.0 + max_grad_norm=0.3 + DpoCollapseGuardCallback 覆盖 |
+| 训练动力学监控      | **不需要** | 已通过 DpoCollapseGuardCallback + 早停覆盖                                                                                                                   |
+| 快捷路径消除        | **不需要** | 已通过 beta=5.0 + max_grad_norm=0.3 + DpoCollapseGuardCallback 覆盖                                                                                          |
 
 ## 六、20 张对比图方案
 

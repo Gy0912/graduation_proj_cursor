@@ -58,8 +58,8 @@ def main() -> None:
     parser.add_argument("--config", default="configs/default.yaml")
     args = parser.parse_args()
 
-    with open(ROOT / args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    from training.config_utils import load_merged_config
+    cfg = load_merged_config(ROOT, args.config)
 
     require_cuda()
 

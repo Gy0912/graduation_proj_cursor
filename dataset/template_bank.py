@@ -968,10 +968,16 @@ for t in sorted(_TEMPLATES, key=lambda t: t["idx"]):
 # ═══════════════════════════════════════════════════════════════
 
 class TemplateSampler:
-    """从 ≥55 个独立模板中做重要性采样。"""
+    """从 ≥55 个独立模板中做重要性采样。
 
-    def __init__(self, rng: random.Random):
+    template_mode 参数（2026-05-11 消融实验）：
+      - "full" (默认): 使用全部 56 个模板
+      - "basic": 仅使用基础类型（function, try_except, validated）模拟旧版 v1
+    """
+
+    def __init__(self, rng: random.Random, template_mode: str = "full"):
         self._rng = rng
+        self._template_mode = template_mode
         self._counter: Counter[int] = Counter()
         self._driver_counter: Counter[str] = Counter()
         self._struct_counter: Counter[str] = Counter()
@@ -983,6 +989,18 @@ class TemplateSampler:
         self._rng.shuffle(self._var_names)
         self._rng.shuffle(self._table_cols)
         self._fi = self._vi = self._ti = 0
+
+        # 构建可用模板索引列表
+        if template_mode == "basic":
+            _BASIC_STRUCTS = {STRUCT_FUNCTION, STRUCT_TRYEXCEPT, STRUCT_VALIDATED}
+            self._available_indices = [
+                i for i, t in enumerate(_TEMPLATES)
+                if t["struct"] in _BASIC_STRUCTS
+            ]
+            if not self._available_indices:
+                self._available_indices = list(range(len(_TEMPLATES)))
+        else:
+            self._available_indices = list(range(len(_TEMPLATES)))
 
     def _next_func(self) -> str:
         n = self._func_names[self._fi]
@@ -1003,9 +1021,11 @@ class TemplateSampler:
         return p
 
     def _sample_idx(self) -> int:
-        # Phase 1: cover all templates at least once
-        if self._total < len(_TEMPLATES):
-            unused = [i for i in range(len(_TEMPLATES)) if self._counter.get(i, 0) == 0]
+        avail = self._available_indices
+        n_avail = len(avail)
+        # Phase 1: cover all available templates at least once
+        if self._total < n_avail:
+            unused = [i for i in avail if self._counter.get(i, 0) == 0]
             if unused:
                 # Among unused, prefer drivers below target
                 scores = []
@@ -1025,24 +1045,29 @@ class TemplateSampler:
 
         # Phase 2: importance sampling with strong driver penalty
         scores = []
-        for i, t in enumerate(_TEMPLATES):
+        for idx in avail:
+            t = _TEMPLATES[idx]
             drv = t["driver"]
             target = DRIVER_TARGET_WEIGHTS.get(drv, 0.10)
+            actual = self._driver_counter.get(drv, 0) / max(self._total, 1)
+            driver_score = max(0.0, target - actual) * 5.0
+            template_penalty = self._counter.get(idx, 0) * 0.002
+            scores.append(max(0.001, driver_score + 0.01 - template_penalty))
             actual = self._driver_counter.get(drv, 0) / max(self._total, 1)
             # Strong penalty for over-target drivers
             driver_score = max(0.0, target - actual) * 5.0  # 5x multiplier
             # Template-level penalty
-            template_penalty = self._counter.get(i, 0) * 0.002
+            template_penalty = self._counter.get(idx, 0) * 0.002
             scores.append(max(0.001, driver_score + 0.01 - template_penalty))
 
         total = sum(scores)
         r = self._rng.random() * total
         cum = 0.0
-        for i, s in enumerate(scores):
+        for idx, s in zip(avail, scores):
             cum += s
             if r <= cum:
-                return i
-        return len(_TEMPLATES) - 1
+                return idx
+        return avail[-1]
 
     def sample_template(self, table: str = "", col: str = "") -> tuple[str, str, str]:
         idx = self._sample_idx()

@@ -326,8 +326,9 @@ def main() -> None:
     )
     args = p.parse_args()
 
-    with open(ROOT / args.config, "r", encoding="utf-8") as f:
-        cfg = yaml.safe_load(f)
+    # 2026-05-13: 合并 default.yaml（消融实验兼容）
+    from training.config_utils import load_merged_config as _lcm
+    cfg = _lcm(ROOT, args.config)
 
     outs = cfg["outputs"]
     method_to_output = {
