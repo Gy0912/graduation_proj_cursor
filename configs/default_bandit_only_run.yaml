@@ -45,14 +45,14 @@ training:
   disable_amp: true
   fp16: false
   bf16: false
-  max_grad_norm: 1.0
+  max_grad_norm: 0.3
   dataloader_num_workers: 2
   dataloader_pin_memory: true
   learning_rate_sft: 0.0001
-  learning_rate_dpo: 2.0e-07
+  learning_rate_dpo: 5.0e-08
   num_train_epochs_sft: 1
   num_train_epochs_dpo: 1
-  warmup_ratio: 0.1
+  warmup_ratio: 0.2
   logging_steps: 10
   save_steps: 100
   eval_steps: 100
@@ -61,10 +61,15 @@ training:
   lora_dropout: 0.05
   load_in_4bit: true
   lora_target_modules: auto
+  early_stopping:
+    patience: 5
+    min_delta: 0.0001
+    overfit_warn_threshold: 0.5
+    overfit_warn_patience: 3
+    save_best: true
 dpo:
-  beta: 0.5
+  beta: 5.0
   max_length: 1024
-  max_prompt_length: 512
 outputs:
   always_safe_results: outputs/always_safe_results_bandit_only.json
   baseline_results: outputs/baseline_results_bandit_only.json
